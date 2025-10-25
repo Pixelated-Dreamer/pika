@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.venv
+virtualenv/
+.Python/
+build/
+develop-eggs/
+dist/
+egg-info/
+*.egg-info
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# IDEs
+.idea/
+.vscode/
+
+# Streamlit
+.streamlit/
