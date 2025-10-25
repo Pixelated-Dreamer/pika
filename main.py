@@ -7,7 +7,20 @@ import requests
 from streamlit_option_menu import option_menu
 
 load_dotenv()
-client = OpenAI()
+
+# Try to get API key from environment variable or Streamlit secrets
+try:
+    # First try Streamlit secrets (for Streamlit Cloud deployment)
+    openai_api_key = st.secrets.get("OPENAI_API_KEY", None)
+except:
+    # Fall back to environment variable (for local .env)
+    openai_api_key = os.getenv("OPENAI_API_KEY", None)
+
+if not openai_api_key:
+    st.error("⚠️ OpenAI API key not found! Please set it in Streamlit secrets or .env file")
+    st.stop()
+
+client = OpenAI(api_key=openai_api_key)
 
 st.set_page_config(layout="wide")
 
@@ -48,7 +61,8 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-site_choise = option_menu( "Pokemon Menu", ["Card Finder", "Trade Decider"] )
+
+site_choise = option_menu("Pokemon Menu", ["Card Finder", "Trade Decider"])
 
 if site_choise == "Card Finder":
     col1, col2 = st.columns(2)
@@ -62,8 +76,9 @@ if site_choise == "Card Finder":
         You are a Pokémon TCG expert.
         Given a possibly misspelled or incomplete Pokémon card name,
         return ONLY the official Pokémon name (without set names or card numbers).
-        Example: 'charzard vmax' → 'Charizard VMAX', 'pickachu V' → 'Pikachu V, rakwaza -> Rayquaza'
-        The input is: {card_name} reply with ONLY the official Pokémon name (without set names or card numbers)., and other text
+        Example: 'charzard vmax' → 'Charizard VMAX', 'pickachu V' → 'Pikachu V', 'rakwaza' -> 'Rayquaza'
+        The input is: {card_name}
+        Reply with ONLY the official Pokémon name, no other text.
         """
 
         response = client.chat.completions.create(
@@ -153,158 +168,158 @@ if site_choise == "Card Finder":
             st.error(f"Unexpected error: {str(e)}")
 
 if site_choise == "Trade Decider":
-    st.title("Trade Decider")
-st.write("Compare two Pokémon cards and get an AI-powered trade fairness analysis!")
+    st.title(" Trade Decider")
+    st.write("Compare two Pokémon cards and get an AI-powered trade fairness analysis!")
 
-col1, col2 = st.columns(2)
+    col1, col2 = st.columns(2)
 
-with col1:
-    st.header("Card 1")
-    card_name_1 = st.text_input("First Card Name", "", key="card1")
+    with col1:
+        st.header(" Card 1")
+        card_name_1 = st.text_input("First Card Name", "", key="card1")
 
-with col2:
-    st.header(" Card 2")
-    card_name_2 = st.text_input("Second Card Name", "", key="card2")
+    with col2:
+        st.header(" Card 2")
+        card_name_2 = st.text_input("Second Card Name", "", key="card2")
 
-def get_card_data(card_name):
-    """Fetch card data from TCGdex API"""
-    if not card_name:
-        return None
-    
-    prompt = f"""
-    You are a Pokémon TCG expert.
-    Given a possibly misspelled or incomplete Pokémon card name,
-    return ONLY the official Pokémon name (without set names or card numbers).
-    Example: 'charzard vmax' → 'Charizard VMAX', 'pickachu V' → 'Pikachu V, rakwaza -> Rayquaza'
-    The input is: {card_name}
-    """
-
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    official_name = response.choices[0].message.content.strip()
-    
-    # Use TCGdex API - search for cards
-    api_url = f"https://api.tcgdex.net/v2/en/cards?name={official_name}"
-    
-    try:
-        api_response = requests.get(api_url, timeout=10)
+    def get_card_data(card_name):
+        """Fetch card data from TCGdex API"""
+        if not card_name:
+            return None
         
-        if api_response.status_code == 200:
-            cards = api_response.json()
+        prompt = f"""
+        You are a Pokémon TCG expert.
+        Given a possibly misspelled or incomplete Pokémon card name,
+        return ONLY the official Pokémon name (without set names or card numbers).
+        Example: 'charzard vmax' → 'Charizard VMAX', 'pickachu V' → 'Pikachu V', 'rakwaza' -> 'Rayquaza'
+        The input is: {card_name}
+        """
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        official_name = response.choices[0].message.content.strip()
+        
+        # Use TCGdex API - search for cards
+        api_url = f"https://api.tcgdex.net/v2/en/cards?name={official_name}"
+        
+        try:
+            api_response = requests.get(api_url, timeout=10)
             
-            if cards and isinstance(cards, list) and len(cards) > 0:
-                card = cards[0]
+            if api_response.status_code == 200:
+                cards = api_response.json()
                 
-                if isinstance(card, dict):
-                    card_id = card.get('id')
+                if cards and isinstance(cards, list) and len(cards) > 0:
+                    card = cards[0]
                     
-                    if card_id:
-                        card_image_url = f"https://api.tcgdex.net/v2/en/cards/{card_id}"
-                        card_detail_response = requests.get(card_image_url, timeout=10)
+                    if isinstance(card, dict):
+                        card_id = card.get('id')
                         
-                        if card_detail_response.status_code == 200:
-                            card_detail = card_detail_response.json()
+                        if card_id:
+                            card_image_url = f"https://api.tcgdex.net/v2/en/cards/{card_id}"
+                            card_detail_response = requests.get(card_image_url, timeout=10)
                             
-                            if isinstance(card_detail, dict):
-                                base_image_url = card_detail.get('image')
+                            if card_detail_response.status_code == 200:
+                                card_detail = card_detail_response.json()
                                 
-                                if base_image_url:
-                                    image_url = f"{base_image_url}/high.webp"
+                                if isinstance(card_detail, dict):
+                                    base_image_url = card_detail.get('image')
                                     
-                                    return {
-                                        'name': card_detail.get('name', official_name),
-                                        'image_url': image_url,
-                                        'set': card_detail.get('set', {}).get('name', 'Unknown'),
-                                        'rarity': card_detail.get('rarity', 'Unknown'),
-                                        'hp': card_detail.get('hp', 'N/A'),
-                                        'types': card_detail.get('types', []),
-                                        'attacks': card_detail.get('attacks', []),
-                                        'retreat': card_detail.get('retreatCost', []),
-                                        'card_detail': card_detail
-                                    }
-        return None
-    except Exception as e:
-        st.error(f"Error fetching card: {str(e)}")
-        return None
+                                    if base_image_url:
+                                        image_url = f"{base_image_url}/high.webp"
+                                        
+                                        return {
+                                            'name': card_detail.get('name', official_name),
+                                            'image_url': image_url,
+                                            'set': card_detail.get('set', {}).get('name', 'Unknown'),
+                                            'rarity': card_detail.get('rarity', 'Unknown'),
+                                            'hp': card_detail.get('hp', 'N/A'),
+                                            'types': card_detail.get('types', []),
+                                            'attacks': card_detail.get('attacks', []),
+                                            'retreat': card_detail.get('retreatCost', []),
+                                            'card_detail': card_detail
+                                        }
+            return None
+        except Exception as e:
+            st.error(f"Error fetching card: {str(e)}")
+            return None
 
-if st.button("Analyze Trade", use_container_width=True):
-    if not card_name_1 or not card_name_2:
-        st.warning("Please enter both card names!")
-    else:
-        with st.spinner("Fetching card data..."):
-            card1_data = get_card_data(card_name_1)
-            card2_data = get_card_data(card_name_2)
-        
-        if not card1_data:
-            st.error(f"❌ Could not find card: {card_name_1}")
-        if not card2_data:
-            st.error(f"❌ Could not find card: {card_name_2}")
-        
-        if card1_data and card2_data:
-            # Display cards side by side
-            col1, col2 = st.columns(2)
+    if st.button("⚖️ Analyze Trade", use_container_width=True):
+        if not card_name_1 or not card_name_2:
+            st.warning("Please enter both card names!")
+        else:
+            with st.spinner("Fetching card data..."):
+                card1_data = get_card_data(card_name_1)
+                card2_data = get_card_data(card_name_2)
             
-            with col1:
-                st.subheader(f"🔵 {card1_data['name']}")
-                st.image(card1_data['image_url'], use_container_width=False)
-                st.write(f"**Set:** {card1_data['set']}")
-                st.write(f"**Rarity:** {card1_data['rarity']}")
-                st.write(f"**HP:** {card1_data['hp']}")
-                if card1_data['types']:
-                    st.write(f"**Type:** {', '.join(card1_data['types'])}")
+            if not card1_data:
+                st.error(f"❌ Could not find card: {card_name_1}")
+            if not card2_data:
+                st.error(f"❌ Could not find card: {card_name_2}")
             
-            with col2:
-                st.subheader(f"🔴 {card2_data['name']}")
-                st.image(card2_data['image_url'], use_container_width=False)
-                st.write(f"**Set:** {card2_data['set']}")
-                st.write(f"**Rarity:** {card2_data['rarity']}")
-                st.write(f"**HP:** {card2_data['hp']}")
-                if card2_data['types']:
-                    st.write(f"**Type:** {', '.join(card2_data['types'])}")
-            
-            st.divider()
-            
-            # AI Analysis
-            with st.spinner("AI is analyzing the trade..."):
-                analysis_prompt = f"""
-                You are a Pokémon Trading Card Game expert and trade analyst. 
+            if card1_data and card2_data:
+                # Display cards side by side
+                col1, col2 = st.columns(2)
                 
-                Compare these two cards and provide a comprehensive trade analysis:
+                with col1:
+                    st.subheader(f"🔵 {card1_data['name']}")
+                    st.image(card1_data['image_url'], use_container_width=False)
+                    st.write(f"**Set:** {card1_data['set']}")
+                    st.write(f"**Rarity:** {card1_data['rarity']}")
+                    st.write(f"**HP:** {card1_data['hp']}")
+                    if card1_data['types']:
+                        st.write(f"**Type:** {', '.join(card1_data['types'])}")
                 
-                Card 1: {card1_data['name']}
-                - Set: {card1_data['set']}
-                - Rarity: {card1_data['rarity']}
-                - HP: {card1_data['hp']}
-                - Types: {', '.join(card1_data['types']) if card1_data['types'] else 'N/A'}
+                with col2:
+                    st.subheader(f"🔴 {card2_data['name']}")
+                    st.image(card2_data['image_url'], use_container_width=False)
+                    st.write(f"**Set:** {card2_data['set']}")
+                    st.write(f"**Rarity:** {card2_data['rarity']}")
+                    st.write(f"**HP:** {card2_data['hp']}")
+                    if card2_data['types']:
+                        st.write(f"**Type:** {', '.join(card2_data['types'])}")
                 
-                Card 2: {card2_data['name']}
-                - Set: {card2_data['set']}
-                - Rarity: {card2_data['rarity']}
-                - HP: {card2_data['hp']}
-                - Types: {', '.join(card2_data['types']) if card2_data['types'] else 'N/A'}
+                st.divider()
                 
-                Provide your analysis in the following format:
-                
-                1. **Trade Verdict**: Is this a fair trade? (Fair Trade / Favors Card 1 / Favors Card 2)
-                
-                2. **Rarity & Collectibility Analysis**: Compare the rarity, set, and collectibility value of both cards.
-                
-                3. **Gameplay Value**: Compare the competitive playability and strategic value of both cards.
-                
-                4. **Market Value Estimation**: Provide a rough estimate of which card is likely more valuable in the current market.
-                
-                5. **Recommendation**: Should this trade be accepted? Provide clear reasoning.
-                
-                Be specific, detailed, and fair in your assessment.
-                """
-                
-                analysis_response = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "user", "content": analysis_prompt}]
-                )
-                
-                st.header("🤖 AI Trade Analysis")
-                st.markdown(analysis_response.choices[0].message.content)
+                # AI Analysis
+                with st.spinner("AI is analyzing the trade..."):
+                    analysis_prompt = f"""
+                    You are a Pokémon Trading Card Game expert and trade analyst. 
+                    
+                    Compare these two cards and provide a comprehensive trade analysis:
+                    
+                    Card 1: {card1_data['name']}
+                    - Set: {card1_data['set']}
+                    - Rarity: {card1_data['rarity']}
+                    - HP: {card1_data['hp']}
+                    - Types: {', '.join(card1_data['types']) if card1_data['types'] else 'N/A'}
+                    
+                    Card 2: {card2_data['name']}
+                    - Set: {card2_data['set']}
+                    - Rarity: {card2_data['rarity']}
+                    - HP: {card2_data['hp']}
+                    - Types: {', '.join(card2_data['types']) if card2_data['types'] else 'N/A'}
+                    
+                    Provide your analysis in the following format:
+                    
+                    1. **Trade Verdict**: Is this a fair trade? (Fair Trade / Favors Card 1 / Favors Card 2)
+                    
+                    2. **Rarity & Collectibility Analysis**: Compare the rarity, set, and collectibility value of both cards.
+                    
+                    3. **Gameplay Value**: Compare the competitive playability and strategic value of both cards.
+                    
+                    4. **Market Value Estimation**: Provide a rough estimate of which card is likely more valuable in the current market.
+                    
+                    5. **Recommendation**: Should this trade be accepted? Provide clear reasoning.
+                    
+                    Be specific, detailed, and fair in your assessment.
+                    """
+                    
+                    analysis_response = client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{"role": "user", "content": analysis_prompt}]
+                    )
+                    
+                    st.header("🤖 AI Trade Analysis")
+                    st.markdown(analysis_response.choices[0].message.content)
