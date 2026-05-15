@@ -6,25 +6,49 @@ import base64
 
 st.set_page_config(page_title="PokéDex Collector", layout="wide", page_icon="🎴")
 
-_DIR = os.path.dirname(__file__)
+_DIR            = os.path.dirname(__file__)
 COLLECTION_FILE = os.path.join(_DIR, "collection.json")
-TCG_API = "https://api.pokemontcg.io/v2/cards"
-
-LANGUAGE_MAP = {
-    "All Nations": None,
-    "USA":         "en",
-    "Japan":       "ja",
-    "South Korea": "ko",
-}
+TCG_API         = "https://api.pokemontcg.io/v2/cards"
 
 
-# ── Background images ─────────────────────────────────────────────────────────
+# ── Background images (graceful if files missing) ─────────────────────────────
 def _b64(name: str) -> str:
-    with open(os.path.join(_DIR, name), "rb") as f:
+    path = os.path.join(_DIR, name)
+    if not os.path.exists(path):
+        return ""
+    with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode()
 
 _pika   = _b64("pikachu-transparent-32599.png")
 _gengar = _b64("Gengar-PNG-Picture.png")
+
+_extra_imgs = ""
+_extra_sz   = ""
+_extra_pos  = ""
+_extra_rep  = ""
+_extra_att  = ""
+if _pika:
+    _extra_imgs += f'url("data:image/png;base64,{_pika}"), '
+    _extra_sz   += "130px, "
+    _extra_pos  += "1% 97%, "
+    _extra_rep  += "no-repeat, "
+    _extra_att  += "fixed, "
+if _gengar:
+    _extra_imgs += f'url("data:image/png;base64,{_gengar}"), '
+    _extra_sz   += "170px, "
+    _extra_pos  += "98% 97%, "
+    _extra_rep  += "no-repeat, "
+    _extra_att  += "fixed, "
+
+_bg_image = (
+    _extra_imgs
+    + "repeating-linear-gradient(0deg,transparent,transparent 23px,rgba(255,215,0,.04) 24px), "
+    + "repeating-linear-gradient(90deg,transparent,transparent 23px,rgba(255,215,0,.04) 24px)"
+)
+_bg_size = _extra_sz + "auto, auto"
+_bg_pos  = _extra_pos + "0 0, 0 0"
+_bg_rep  = _extra_rep + "repeat, repeat"
+_bg_att  = _extra_att + "fixed, fixed"
 
 
 # ── Styling ───────────────────────────────────────────────────────────────────
@@ -32,27 +56,18 @@ st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
 
-/* ── Background ── */
 [data-testid="stAppViewContainer"] {{
     background-color: #0d0d1a;
-    background-image:
-        url("data:image/png;base64,{_pika}"),
-        url("data:image/png;base64,{_gengar}"),
-        repeating-linear-gradient(0deg, transparent, transparent 23px, rgba(255,215,0,.04) 24px),
-        repeating-linear-gradient(90deg, transparent, transparent 23px, rgba(255,215,0,.04) 24px);
-    background-size: 130px, 170px, auto, auto;
-    background-position: 1% 97%, 98% 97%, 0 0, 0 0;
-    background-repeat: no-repeat, no-repeat, repeat, repeat;
-    background-attachment: fixed, fixed, fixed, fixed;
+    background-image: {_bg_image};
+    background-size: {_bg_size};
+    background-position: {_bg_pos};
+    background-repeat: {_bg_rep};
+    background-attachment: {_bg_att};
 }}
-
-/* ── Sidebar ── */
 [data-testid="stSidebar"] {{
     background-color: #080812;
     border-right: 3px solid #f5c51833;
 }}
-
-/* ── Pixel font for headings ── */
 h1, h2, h3, h4 {{
     font-family: 'Press Start 2P', monospace !important;
 }}
@@ -66,8 +81,6 @@ h2, h3, h4 {{
     color: #d4a820 !important;
     font-size: 11px !important;
 }}
-
-/* ── Buttons ── */
 .stButton > button {{
     font-family: 'Press Start 2P', monospace !important;
     font-size: 8px !important;
@@ -88,8 +101,6 @@ h2, h3, h4 {{
     box-shadow: 1px 1px 0px #7a6200;
     transform: translate(2px, 2px);
 }}
-
-/* ── Inputs ── */
 .stTextInput input {{
     font-family: 'Press Start 2P', monospace !important;
     font-size: 9px !important;
@@ -104,38 +115,24 @@ h2, h3, h4 {{
     font-size: 8px !important;
     color: #f5c518 !important;
 }}
-
-/* ── Selectbox ── */
-.stSelectbox label {{
-    font-family: 'Press Start 2P', monospace !important;
-    font-size: 8px !important;
-    color: #f5c518 !important;
-}}
-.stSelectbox > div > div {{
-    background: #080812;
-    border: 2px solid #f5c51844;
-    border-radius: 0;
-    font-family: 'Press Start 2P', monospace !important;
-    font-size: 8px !important;
-    color: #00e676;
-}}
-
-/* ── Card images ── */
 [data-testid="stImage"] img {{
     border: 2px solid #f5c51844;
     display: block;
     margin: 0 auto;
 }}
-
-/* ── Divider ── */
-hr {{
-    border-color: #f5c51833;
+hr {{ border-color: #f5c51833; }}
+.stCaption {{ color: #888 !important; }}
+.stat-pill {{
+    display: inline-block;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 7px;
+    background: #111;
+    border: 1px solid #f5c51844;
+    color: #f5c518;
+    padding: 4px 8px;
+    margin: 2px 3px 2px 0;
 }}
-
-/* ── Caption ── */
-.stCaption {{
-    color: #888 !important;
-}}
+.stat-pill span {{ color: #00e676; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -175,7 +172,7 @@ def collection_ids() -> set[str]:
 # ── Price helpers ─────────────────────────────────────────────────────────────
 def best_price(card: dict) -> float | None:
     prices = card.get("tcgplayer", {}).get("prices", {})
-    vals = [v.get("market") for v in prices.values() if v.get("market")]
+    vals   = [v.get("market") for v in prices.values() if v.get("market")]
     return max(vals) if vals else None
 
 
@@ -191,43 +188,92 @@ def card_to_dict(raw: dict) -> dict:
         "set_id":        raw.get("set", {}).get("id", ""),
         "number":        raw.get("number", ""),
         "printed_total": raw.get("set", {}).get("printedTotal", "?"),
+        "language":      raw.get("set", {}).get("language", "en"),
         "price":         best_price(raw),
         "image":         raw.get("images", {}).get("large")
                          or raw.get("images", {}).get("small", ""),
     }
 
 
-# ── API ───────────────────────────────────────────────────────────────────────
-def search_tcg(name: str, set_number: str = "", language: str | None = None) -> list[dict]:
-    q = f'name:"{name}"'
+# ── API — paginated wildcard search, no language restriction ──────────────────
+def search_tcg_all(name: str, set_number: str = "") -> list[dict]:
+    """
+    Fetch every card whose name *contains* `name`.
+
+    Using `name:*{name}*` (wildcard on both sides) means:
+      - Base cards           → "Jolteon"
+      - Variant cards        → "Jolteon VMAX", "Jolteon GX" …
+      - Regional forms       → "Galarian Jolteon", "Alolan Jolteon" …
+      - Trainer/owner cards  → "Misty's Jolteon", "Team Rocket's Jolteon" …
+      - All languages        → no language filter = API returns en + ja + ko + …
+        (pokemontcg.io's non-English index is small but anything it has comes through)
+
+    Paginates until all pages are consumed so no card is ever missed.
+    """
+    q = f"name:*{name}*"
 
     if set_number and "/" in set_number:
         parts = set_number.split("/")
         num   = parts[0].strip()
         total = parts[1].strip()
-        q += f" number:{num}"
+        q    += f" number:{num}"
         if total:
             q += f" set.printedTotal:{total}"
     elif set_number.strip():
         q += f" number:{set_number.strip()}"
 
-    if language:
-        q += f" set.language:{language}"
+    PAGE_SIZE      = 250          # API maximum per page
+    all_raw: list  = []
+    seen_ids: set  = set()
+    page           = 1
+    api_total      = 0
 
-    try:
-        r = requests.get(TCG_API, params={"q": q, "pageSize": 100}, timeout=15)
-        if r.status_code == 200:
-            return r.json().get("data", [])
-        else:
+    while True:
+        try:
+            r = requests.get(
+                TCG_API,
+                params={
+                    "q":        q,
+                    "pageSize": PAGE_SIZE,
+                    "page":     page,
+                    "orderBy":  "-set.releaseDate",
+                },
+                timeout=20,
+            )
+        except requests.exceptions.Timeout:
+            st.error("Request timed out — try again.")
+            break
+        except requests.exceptions.RequestException as e:
+            st.error(f"Network error: {e}")
+            break
+
+        if r.status_code != 200:
             st.error(f"API error {r.status_code}")
-    except requests.exceptions.Timeout:
-        st.error("Request timed out — try again.")
-    except requests.exceptions.RequestException as e:
-        st.error(f"Network error: {e}")
-    return []
+            break
+
+        payload   = r.json()
+        api_total = payload.get("totalCount", 0)
+        batch     = payload.get("data", [])
+
+        for card in batch:
+            cid = card.get("id", "")
+            if cid not in seen_ids:
+                seen_ids.add(cid)
+                all_raw.append(card)
+
+        # Done when we have all cards or the batch was smaller than a full page
+        if len(batch) < PAGE_SIZE or len(all_raw) >= api_total:
+            break
+        page += 1
+
+    return all_raw
 
 
 # ── Card grid ─────────────────────────────────────────────────────────────────
+_REGIONAL_PREFIXES = [
+    "Galarian", "Alolan", "Hisuian", "Paldean", "Unovan", "Shadow", "Radiant",
+]
+
 def show_card_grid(cards: list[dict], mode: str, owned: set[str]):
     if not cards:
         st.info("No cards to display.")
@@ -239,20 +285,29 @@ def show_card_grid(cards: list[dict], mode: str, owned: set[str]):
             if card.get("image"):
                 st.image(card["image"], use_container_width=True)
 
-            # Pixel-styled name
             st.markdown(
                 f'<div style="font-family:\'Press Start 2P\',monospace;font-size:7px;'
-                f'color:#fff;margin:6px 0 4px;word-break:break-word;line-height:1.6;">'
+                f'color:#fff;margin:6px 0 2px;word-break:break-word;line-height:1.6;">'
                 f'{card["name"]}</div>',
                 unsafe_allow_html=True,
             )
 
-            # Set number + price on one horizontal line
-            sn = f"{card['number']}/{card['printed_total']}"
+            sn   = f"{card['number']}/{card['printed_total']}"
+            lang = (card.get("language") or "en").upper()
+
+            # Non-English badge
+            lang_html = ""
+            if lang != "EN":
+                lang_html = (
+                    f'&nbsp;<span style="font-family:\'Press Start 2P\',monospace;'
+                    f'font-size:6px;background:#1a2a1a;color:#7fff7f;'
+                    f'border:1px solid #3f7f3f;padding:2px 4px;">{lang}</span>'
+                )
+
             st.markdown(
-                f'<div style="display:flex;justify-content:space-between;'
+                f'<div style="display:flex;align-items:center;justify-content:space-between;'
                 f'font-family:\'Press Start 2P\',monospace;font-size:7px;margin-bottom:6px;">'
-                f'<span style="color:#f5c518;">{sn}</span>'
+                f'<span style="color:#f5c518;">{sn}{lang_html}</span>'
                 f'<span style="color:#00e676;">{fmt_price(card["price"])}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
@@ -272,7 +327,6 @@ def show_card_grid(cards: list[dict], mode: str, owned: set[str]):
                         on_click=add_to_collection,
                         args=(card,),
                     )
-
             elif mode == "collection":
                 st.button(
                     "－ REMOVE",
@@ -288,16 +342,12 @@ def show_card_grid(cards: list[dict], mode: str, owned: set[str]):
 if "search_results" not in st.session_state:
     st.session_state["search_results"] = []
 
-# Load once per render — on_click callbacks fire before this, so disk is already updated
 _owned      = collection_ids()
 _collection = load_collection()
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── Sidebar — collection only ──────────────────────────────────────────────────
 with st.sidebar:
-    st.selectbox("Language", list(LANGUAGE_MAP.keys()), key="language")
-
-    st.divider()
     st.markdown("### My Collection")
 
     if not _collection:
@@ -339,32 +389,54 @@ with st.sidebar:
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-st.title("🎴POKESEARCH")
+st.title("🎴 POKÉDEX COLLECTOR")
+
+st.markdown(
+    '<div style="font-family:\'Press Start 2P\',monospace;font-size:7px;color:#888;'
+    'margin:-10px 0 18px;line-height:2;">Type any Pokémon — trainer cards, regional forms '
+    '&amp; all languages included automatically.</div>',
+    unsafe_allow_html=True,
+)
 
 col_a, col_b = st.columns([2, 1])
 with col_a:
-    pokemon_name = st.text_input("POKÉMON NAME", placeholder="e.g. Charizard, Pikachu VMAX…")
+    pokemon_name = st.text_input("POKÉMON NAME", placeholder="e.g. Jolteon, Charizard, Pikachu…")
 with col_b:
-    set_number = st.text_input("SET NUMBER", placeholder="e.g. 171/094")
-    st.caption("Leave empty to see all cards with that name.")
+    set_number = st.text_input("SET NUMBER  (optional)", placeholder="e.g. 171/094")
 
 if st.button("🔍 SEARCH"):
     if not pokemon_name.strip():
         st.warning("Enter a Pokémon name to search.")
     else:
-        lang = LANGUAGE_MAP[st.session_state.get("language", "All Nations")]
-        with st.spinner("Searching…"):
-            raw = search_tcg(pokemon_name.strip(), set_number.strip(), lang)
+        with st.spinner(f"Fetching every card for \"{pokemon_name.strip()}\"…"):
+            raw_cards = search_tcg_all(pokemon_name.strip(), set_number.strip())
 
-        if raw:
-            found = [card_to_dict(c) for c in raw]
+        if raw_cards:
+            found = [card_to_dict(c) for c in raw_cards]
             found.sort(key=lambda c: (c["price"] or 0), reverse=True)
             st.session_state["search_results"] = found
         else:
             st.session_state["search_results"] = []
-            st.warning("No cards found. Try adjusting the name or set number.")
+            st.warning("No cards found. Check the spelling and try again.")
 
+# ── Results ───────────────────────────────────────────────────────────────────
 if st.session_state["search_results"]:
-    _results = st.session_state["search_results"]
-    st.markdown(f"**{len(_results)} result(s)** — sorted by price")
-    show_card_grid(_results, mode="search", owned=_owned)
+    results = st.session_state["search_results"]
+
+    trainer_cards  = [c for c in results if "'" in c["name"]]
+    regional_cards = [c for c in results if any(
+        c["name"].startswith(p) for p in _REGIONAL_PREFIXES
+    )]
+    non_en_cards   = [c for c in results if (c.get("language") or "en").upper() != "EN"]
+
+    st.markdown(
+        f'<div style="margin:8px 0 16px;">'
+        f'<span class="stat-pill">🃏 <span>{len(results)}</span> cards</span>'
+        f'<span class="stat-pill">🎓 trainer <span>{len(trainer_cards)}</span></span>'
+        f'<span class="stat-pill">🗾 regional <span>{len(regional_cards)}</span></span>'
+        f'<span class="stat-pill">🌏 non-english <span>{len(non_en_cards)}</span></span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    show_card_grid(results, mode="search", owned=_owned)
