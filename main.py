@@ -284,6 +284,13 @@ hr {{ border-color: #c8a84b33; border-width: 2px; margin: 12px 0; }}
 @st.cache_data
 def load_pokemon_names() -> list[str]:
     csv_path = os.path.join(_DIR, "pokemon.csv")
+    if not os.path.exists(csv_path):
+        st.warning(
+            f"⚠️ **Fuzzy Search Warning:** `pokemon.csv` not found at `{csv_path}`. "
+            "Please ensure `pokemon.csv` has been committed and successfully pushed to your GitHub repository. "
+            "If it is missing from GitHub, the fuzzy search feature will not work."
+        )
+        return []
     try:
         df = pd.read_csv(csv_path, usecols=["identifier"])
         names = [
@@ -291,7 +298,8 @@ def load_pokemon_names() -> list[str]:
             for name in df["identifier"].dropna().unique()
         ]
         return sorted(set(names))
-    except Exception:
+    except Exception as e:
+        st.error(f"❌ **Error loading pokemon.csv:** {e}")
         return []
 
 _POKEMON_NAMES = load_pokemon_names()
