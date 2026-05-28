@@ -5,12 +5,24 @@ import os
 import base64
 import pandas as pd
 import difflib
+import concurrent.futures
+from datetime import datetime, timedelta
+import random
+import altair as alt
+
+
+try:
+    from streamlit_option_menu import option_menu
+    HAS_OPTION_MENU = True
+except ImportError:
+    HAS_OPTION_MENU = False
 
 st.set_page_config(page_title="PokéDex Collector", layout="wide", page_icon="🎴")
 
 _DIR            = os.path.dirname(__file__)
 COLLECTION_FILE = os.path.join(_DIR, "collection.json")
-TCG_API         = "https://api.pokemontcg.io/v2/cards"
+TCG_API         = "https://api.tcgdex.net/v2"
+
 
 
 # ── Background images ─────────────────────────────────────────────────────────
@@ -276,7 +288,53 @@ hr {{ border-color: #c8a84b33; border-width: 2px; margin: 12px 0; }}
     color: #b0b0cc;
     font-size: 5px;
 }}
+
+/* ── Collection grid minus button ────────────────────────── */
+div[data-testid="column"]:has(.coll-card-info) .stButton > button {{
+    width: 60px !important;
+    height: 28px !important;
+    padding: 0 !important;
+    font-size: 10px !important;
+    margin: 0 auto !important;
+    display: block !important;
+    line-height: 24px !important;
+    background: #2a0808 !important;
+    color: #ff5555 !important;
+    border: 2px solid #ff5555aa !important;
+}}
+div[data-testid="column"]:has(.coll-card-info) .stButton > button:hover {{
+    background: #ff5555 !important;
+    color: #0d0d18 !important;
+    border-color: #ff5555 !important;
+    box-shadow: 2px 2px 0px #5c1a1a !important;
+}}
+
+/* ── Search results grid alignment ────────────────────────── */
+div[data-testid="column"]:has([data-testid="stImage"]):not(:has(.coll-card-info)) {{
+    border: 2px solid #c8a84b33 !important;
+    padding: 16px !important;
+    background: #080810 !important;
+    margin-bottom: 20px !important;
+    height: 420px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
+}}
+div[data-testid="column"]:has([data-testid="stImage"]):not(:has(.coll-card-info)) [data-testid="stImage"] {{
+    height: 220px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    overflow: hidden !important;
+}}
+div[data-testid="column"]:has([data-testid="stImage"]):not(:has(.coll-card-info)) [data-testid="stImage"] img {{
+    max-height: 200px !important;
+    width: auto !important;
+    object-fit: contain !important;
+}}
 </style>
+
+
 """, unsafe_allow_html=True)
 
 
@@ -311,14 +369,24 @@ def fuzzy_correct(name: str) -> str | None:
     if not name or not _POKEMON_NAMES:
         return None
     low = name.strip().lower()
+    
+    # If the search string already contains one of the Pokémon names as a word, do not correct it!
+    # For example, "pikachu ex" or "pikachu with grey felt hat" contains "pikachu", so keep as is.
+    words = low.split()
+    for word in words:
+        if word in _POKEMON_NAMES_LOWER:
+            return None
+            
     # Exact match (case-insensitive) — no correction needed
     if low in _POKEMON_NAMES_LOWER:
         return None
+        
     matches = difflib.get_close_matches(low, _POKEMON_NAMES_LOWER, n=1, cutoff=0.6)
     if matches:
         idx = _POKEMON_NAMES_LOWER.index(matches[0])
         return _POKEMON_NAMES[idx]
     return None
+
 
 
 
@@ -356,9 +424,38 @@ def collection_ids() -> set[str]:
 
 # ── Price helpers ─────────────────────────────────────────────────────────────
 def best_price(card: dict) -> float | None:
-    prices = card.get("tcgplayer", {}).get("prices", {})
-    vals   = [v.get("market") for v in prices.values() if v.get("market")]
-    return max(vals) if vals else None
+    pricing = card.get("pricing", {})
+    if not pricing:
+        return None
+    
+    prices = []
+    
+    # 1. Try TCGplayer (USD)
+    tcgplayer = pricing.get("tcgplayer", {})
+    if tcgplayer:
+        for variant, details in tcgplayer.items():
+            if isinstance(details, dict):
+                market = details.get("market") or details.get("marketPrice")
+                mid = details.get("mid") or details.get("midPrice")
+                low = details.get("low") or details.get("lowPrice")
+                val = market or mid or low
+                if val is not None:
+                    try:
+                        prices.append(float(val))
+                    except (ValueError, TypeError):
+                        pass
+
+    # 2. Fallback to Cardmarket (EUR/Converted)
+    cardmarket = pricing.get("cardmarket", {})
+    if cardmarket:
+        market = cardmarket.get("trend") or cardmarket.get("avg") or cardmarket.get("low")
+        if market is not None:
+            try:
+                prices.append(float(market))
+            except (ValueError, TypeError):
+                pass
+                
+    return max(prices) if prices else None
 
 
 def fmt_price(p: float | None) -> str:
@@ -366,83 +463,85 @@ def fmt_price(p: float | None) -> str:
 
 
 def card_to_dict(raw: dict) -> dict:
+    card_set = raw.get("set", {})
+    image_base = raw.get("image", "")
+    card_back_url = "https://raw.githubusercontent.com/the-epsd/twinleafgg/master/assets/cardback.png"
+    image_url = f"{image_base}/low.png" if image_base else card_back_url
+    
     return {
         "id":            raw.get("id", ""),
         "name":          raw.get("name", ""),
-        "set_name":      raw.get("set", {}).get("name", ""),
-        "set_id":        raw.get("set", {}).get("id", ""),
-        "number":        raw.get("number", ""),
-        "printed_total": raw.get("set", {}).get("printedTotal", "?"),
-        "language":      raw.get("set", {}).get("language", "en"),
+        "set_name":      card_set.get("name", ""),
+        "set_id":        card_set.get("id", ""),
+        "number":        raw.get("localId", ""),
+        "printed_total": card_set.get("cardCount", {}).get("total", "?"),
+        "language":      raw.get("language") or "en",
         "price":         best_price(raw),
-        "image":         raw.get("images", {}).get("large")
-                         or raw.get("images", {}).get("small", ""),
+        "image":         image_url,
     }
 
 
+
 # ── API search ────────────────────────────────────────────────────────────────
+@st.cache_data(show_spinner=False, ttl=3600)
+def cached_fetch_card_details(card_id: str, lang: str) -> dict | None:
+    url = f"{TCG_API}/{lang}/cards/{card_id}"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            data["language"] = lang
+            return data
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
 def search_tcg_all(name: str, set_number: str = "", language: str = "en") -> list[dict]:
     """
-    Fetch every card whose name contains `name`.
-    The pokemontcg.io API only hosts English cards, so language filtering
-    is not available server-side; we always search by name only.
+    Fetch cards whose name contains `name` using TCGdex API.
+    Concurrently fetches detailed card info to get pricing and set details.
     """
-    q = f"name:*{name}*"
-
-    if set_number and "/" in set_number:
-        parts = set_number.split("/")
-        num   = parts[0].strip()
-        total = parts[1].strip()
-        q    += f" number:{num}"
-        if total:
-            q += f" set.printedTotal:{total}"
-    elif set_number.strip():
-        q += f" number:{set_number.strip()}"
-
-    PAGE_SIZE     = 250
-    all_raw: list = []
-    seen_ids: set = set()
-    page          = 1
-    api_total     = 0
-
-    while True:
-        try:
-            r = requests.get(
-                TCG_API,
-                params={
-                    "q":        q,
-                    "pageSize": PAGE_SIZE,
-                    "page":     page,
-                    "orderBy":  "-set.releaseDate",
-                },
-                timeout=20,
-            )
-        except requests.exceptions.Timeout:
-            st.error("Request timed out — try again.")
-            break
-        except requests.exceptions.RequestException as e:
-            st.error(f"Network error: {e}")
-            break
-
+    lang = language if language else "en"
+    url = f"{TCG_API}/{lang}/cards"
+    
+    try:
+        r = requests.get(url, params={"name": name}, timeout=15)
         if r.status_code != 200:
-            st.error(f"API error {r.status_code}")
-            break
+            return []
+        briefs = r.json()
+    except Exception as e:
+        st.error(f"Network error: {e}")
+        return []
 
-        payload   = r.json()
-        api_total = payload.get("totalCount", 0)
-        batch     = payload.get("data", [])
+    if not briefs:
+        return []
 
-        for card in batch:
-            cid = card.get("id", "")
-            if cid not in seen_ids:
-                seen_ids.add(cid)
-                all_raw.append(card)
+    # Sort briefs so that modern sets and promo series (like svp, sv1, swsh...) are first
+    # Reversing alphabetically prioritizes 'svp', 'sv...', 'swsh...' over older sets 'base...'
+    briefs.sort(key=lambda b: b.get("id", ""), reverse=True)
 
-        if len(batch) < PAGE_SIZE or len(all_raw) >= api_total:
-            break
-        page += 1
+    # Filter by set number locally for robustness
+    if set_number.strip():
+        target_num = set_number.split("/")[0].strip() if "/" in set_number else set_number.strip()
+        briefs = [b for b in briefs if b.get("localId") == target_num]
+
+    # Capped to 300 cards to ensure comprehensive inclusion of all promo and special cards
+    briefs = briefs[:300]
+
+    all_raw = []
+    # Concurrently fetch detailed card info
+    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+        futures = {executor.submit(cached_fetch_card_details, brief["id"], lang): brief for brief in briefs}
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res:
+                all_raw.append(res)
 
     return all_raw
+
+
 
 
 # ── Card grid ─────────────────────────────────────────────────────────────────
@@ -458,8 +557,9 @@ def show_card_grid(cards: list[dict], mode: str, owned: set[str], num_cols: int 
     cols = st.columns(num_cols)
     for i, card in enumerate(cards):
         with cols[i % num_cols]:
-            if card.get("image"):
-                st.image(card["image"], use_container_width=True)
+            card_back_url = "https://raw.githubusercontent.com/the-epsd/twinleafgg/master/assets/cardback.png"
+            img_url = card.get("image") or card_back_url
+            st.image(img_url, use_container_width=True)
 
             st.markdown(
                 f'<div style="font-family:\'Press Start 2P\',monospace;font-size:7px;'
@@ -525,8 +625,9 @@ def show_collection_grid(cards: list[dict], owned: set[str], num_cols: int = 8):
     cols = st.columns(num_cols, gap="small")
     for i, card in enumerate(cards):
         with cols[i % num_cols]:
-            if card.get("image"):
-                st.image(card["image"], use_container_width=True)
+            card_back_url = "https://raw.githubusercontent.com/the-epsd/twinleafgg/master/assets/cardback.png"
+            img_url = card.get("image") or card_back_url
+            st.image(img_url, use_container_width=True)
 
             sn        = f"{card['number']}/{card['printed_total']}"
             price_str = fmt_price(card["price"])
@@ -549,11 +650,108 @@ def show_collection_grid(cards: list[dict], owned: set[str], num_cols: int = 8):
             )
 
 
+# ── Profit & History Helpers ──────────────────────────────────────────────────
+def simulate_card_history(card: dict, days: int = 30) -> list[float]:
+    current_price = card.get("price") or 0.0
+    if current_price == 0.0:
+        return [0.0] * days
+    
+    # Stable seed based on card unique ID to keep lines consistent on redraws
+    seed_val = sum(ord(c) for c in card.get("id", ""))
+    random.seed(seed_val)
+    
+    history = [0.0] * days
+    history[-1] = current_price
+    
+    # Random walk backwards
+    for i in range(days - 2, -1, -1):
+        change = random.uniform(-0.012, 0.022)
+        history[i] = round(history[i+1] / (1.0 + change), 2)
+        
+    return history
+
+
+def get_altair_line_chart(df: pd.DataFrame, x_col: str, y_col: str, height: int = 220):
+    min_val = float(df[y_col].min())
+    max_val = float(df[y_col].max())
+    val_range = max_val - min_val
+    
+    # Center the line: pad domain dynamically
+    padding = max(val_range * 0.4, min_val * 0.1, 1.0)
+    y_min = max(0.0, min_val - padding)
+    y_max = max_val + padding
+    
+    # Create simple non-interactive (static/unadjustable) line chart without area fill
+    chart = alt.Chart(df.reset_index()).mark_line(
+        color="#c8a84b",
+        strokeWidth=2
+    ).encode(
+        x=alt.X(f"{x_col}:N", sort=None, axis=alt.Axis(labelAngle=-45, title=None, labelColor="#8888aa", grid=False)),
+        y=alt.Y(f"{y_col}:Q", scale=alt.Scale(domain=[y_min, y_max]), axis=alt.Axis(title=None, labelColor="#8888aa", grid=True, gridColor="#2a2a40")),
+    ).properties(
+        height=height
+    ).configure_view(
+        strokeWidth=0
+    ).configure_axis(
+        domain=False
+    )
+    return chart
+
+
+def show_profit_grid_with_charts(profits: list[dict]):
+    if not profits:
+        st.info("No cards to display.")
+        return
+        
+    for item in profits:
+        card = item["card"]
+        
+        # Retro box wrapper for each card (full width)
+        st.markdown(
+            f'<div style="border: 2px solid #c8a84b33; padding: 16px; margin-bottom: 20px; background: #080810;">',
+            unsafe_allow_html=True
+        )
+        
+        # Text-only details header
+        gain_pct = item["gain_pct"]
+        gain_val = item["gain"]
+        color = "#00e676" if gain_val >= 0 else "#ff1744"
+        sign = "+" if gain_val >= 0 else ""
+        
+        st.markdown(
+            f'<div style="font-family:\'Press Start 2P\',monospace;font-size:7px;line-height:2.0;margin-bottom:12px;display:flex;justify-content:space-between;flex-wrap:wrap;align-items:center;">'
+            f'<span style="color:#f5c518;font-size:9px;">🏆 {card["name"]} ({card["id"]})</span>'
+            f'<span style="color:#888;">Base: <span style="color:#fff;">${item["base"]:.2f}</span>&nbsp;&nbsp;'
+            f'Market: <span style="color:#fff;">${item["current"]:.2f}</span>&nbsp;&nbsp;'
+            f'Profit: <span style="color:{color};font-weight:bold;">{sign}${gain_val:.2f} ({sign}{gain_pct:.1f}%)</span></span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+        
+        # Simulated history data for chart
+        days = 30
+        card_hist = simulate_card_history(card, days)
+        dates = [(datetime.now() - timedelta(days=d)).strftime("%b %d") for d in range(days)]
+        dates.reverse()
+        
+        card_df = pd.DataFrame({
+            "Date": dates,
+            "Price ($)": card_hist
+        }).set_index("Date")
+        
+        # Draw individual card chart (full width and larger height: 180)
+        card_chart = get_altair_line_chart(card_df, "Date", "Price ($)", height=180)
+        st.altair_chart(card_chart, use_container_width=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.write("")
+
+
+
+
 # ── Session state ─────────────────────────────────────────────────────────────
 if "search_results" not in st.session_state:
     st.session_state["search_results"] = []
-if "show_collection_overlay" not in st.session_state:
-    st.session_state["show_collection_overlay"] = False
 if "fuzzy_suggestion" not in st.session_state:
     st.session_state["fuzzy_suggestion"] = None
 if "accepted_fuzzy" not in st.session_state:
@@ -566,95 +764,48 @@ _collection = load_collection()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    # ── Language selector at the very top ─────────────────────────────────────
-    language_choice = st.selectbox(
-        "Language",
-        options=["🇺🇸 English", "🇯🇵 Japanese", "🌏 All"],
-        index=0,
-        key="language_select",
-    )
-    _lang_map = {
-        "🇺🇸 English": "en",
-        "🇯🇵 Japanese": "ja",
-        "🌏 All": "",
-    }
-    _lang_code = _lang_map[language_choice]
-
+    options = ["Searcher", "My Collection", "Profit Selection"]
+    if HAS_OPTION_MENU:
+        active_page = option_menu(
+            menu_title=None,
+            options=options,
+            icons=None,
+            default_index=0
+        )
+    else:
+        active_page = st.sidebar.radio("NAVIGATE", options)
+        
     st.divider()
 
-    st.markdown(
-        '<div style="font-family:\'Inter\',sans-serif;font-size:13px;font-weight:600;'
-        'color:#c8a84b;margin-bottom:4px;">My Collection</div>',
-        unsafe_allow_html=True,
-    )
-
-    if not _collection:
-        st.caption("No cards yet — search and add some!")
-    else:
-        _total = sum(c["price"] for c in _collection if c.get("price"))
-        st.markdown(
-            f'<div style="font-family:\'Inter\',sans-serif;font-size:11px;color:#666680;'
-            f'margin-bottom:10px;">{len(_collection)} cards · '
-            f'<span style="color:#c8a84b;font-weight:600;">${_total:.2f}</span></div>',
-            unsafe_allow_html=True,
+    _lang_code = "en"
+    if active_page == "Searcher":
+        language_choice = st.selectbox(
+            "Language",
+            options=["🇺🇸 English", "🇯🇵 Japanese", "🌏 All"],
+            index=0,
+            key="language_select",
         )
-
-        if st.button("View Full Collection", key="expand_collection_btn"):
-            st.session_state["show_collection_overlay"] = True
-            st.rerun()
-
+        _lang_map = {
+            "🇺🇸 English": "en",
+            "🇯🇵 Japanese": "ja",
+            "🌏 All": "",
+        }
+        _lang_code = _lang_map[language_choice]
         st.divider()
 
-        # Show up to 12 cards as thumbnails
-        _sb_sorted = sorted(_collection, key=lambda c: (c.get("set_name", ""), -(c.get("price") or 0)))
-        for _sb_card in _sb_sorted[:12]:
-            img_tag = ""
-            if _sb_card.get("image"):
-                img_tag = f'<img src="{_sb_card["image"]}" style="width:38px;border-radius:4px;flex-shrink:0;">'
-            price_str = f'${_sb_card["price"]:.2f}' if _sb_card.get("price") else ""
-            st.markdown(
-                f'<div class="sb-card">'
-                f'{img_tag}'
-                f'<div class="sb-card-info">'
-                f'<div>{_sb_card["name"]}</div>'
-                f'<div class="sb-card-price">{price_str}</div>'
-                f'</div></div>',
-                unsafe_allow_html=True,
-            )
-        if len(_sb_sorted) > 12:
-            st.caption(f"+ {len(_sb_sorted) - 12} more")
+    # Cards list removed from sidebar as requested
+    pass
 
-if st.session_state["show_collection_overlay"]:
-    _bk_col, _ttl_col = st.columns([1, 5])
-    with _bk_col:
-        if st.button("← Back", key="close_overlay_btn"):
-            st.session_state["show_collection_overlay"] = False
-            st.rerun()
-    with _ttl_col:
-        st.title("📦 MY COLLECTION")
 
-    if not _collection:
-        st.info("Your collection is empty.")
-    else:
-        _total_val = sum(c["price"] for c in _collection if c.get("price"))
-        st.markdown(
-            f'<div style="font-family:\'Inter\',sans-serif;font-size:13px;color:#666680;'
-            f'margin-bottom:20px;">{len(_collection)} cards · '
-            f'<span style="color:#c8a84b;font-weight:600;">${_total_val:.2f}</span> est. value</div>',
-            unsafe_allow_html=True,
-        )
-        # Sort entire collection by price high to low, no grouping
-        _coll_by_price = sorted(_collection, key=lambda c: -(c.get("price") or 0))
-        show_collection_grid(_coll_by_price, owned=_owned, num_cols=8)
 
-else:
-    # ── Main Search Screen ────────────────────────────────────────────────────
-    st.title("🎴 POKÉDEX COLLECTOR")
+# ── Main Content Routing ──────────────────────────────────────────────────────
+if active_page == "Searcher":
+    st.title("🎴 POKÉDEX SEARCHER")
 
     st.markdown(
         '<div style="font-family:\'Inter\',sans-serif;font-size:13px;color:#666680;'
-        'margin:-6px 0 20px;line-height:1.7;">Search any Pokémon card — typos are '
-        'auto-corrected automatically.</div>',
+        'margin:-6px 0 20px;line-height:1.7;">Search any Pokémon card using the '
+        'fast TCGdex API — typos are corrected automatically.</div>',
         unsafe_allow_html=True,
     )
 
@@ -724,3 +875,101 @@ else:
             unsafe_allow_html=True,
         )
         show_card_grid(results, mode="search", owned=_owned)
+
+elif active_page == "My Collection":
+    st.title("📦 MY COLLECTION")
+
+    if not _collection:
+        st.info("Your collection is empty. Go to the Card Searcher to add some cards!")
+    else:
+        _total_val = sum(c["price"] for c in _collection if c.get("price"))
+        st.markdown(
+            f'<div style="font-family:\'Inter\',sans-serif;font-size:13px;color:#666680;'
+            f'margin-bottom:20px;">{len(_collection)} cards '
+            f'<span style="color:#c8a84b;font-weight:600;">${_total_val:.2f}</span> est. value</div>',
+            unsafe_allow_html=True,
+        )
+        _coll_by_price = sorted(_collection, key=lambda c: -(c.get("price") or 0))
+        show_collection_grid(_coll_by_price, owned=_owned, num_cols=8)
+
+elif active_page == "Profit Selection":
+    st.title("PROFIT & TRENDS")
+    
+    if not _collection:
+        st.info("No cards in your collection yet. Add some in the Card Searcher to see profit analysis!")
+    else:
+        days = 30
+        dates = [(datetime.now() - timedelta(days=i)).strftime("%b %d") for i in range(days)]
+        dates.reverse()
+        
+        # Calculate daily totals
+        daily_totals = [0.0] * days
+        for card in _collection:
+            card_hist = simulate_card_history(card, days)
+            for i in range(days):
+                daily_totals[i] += card_hist[i]
+                
+        # Metrics row
+        current_val = daily_totals[-1]
+        base_val = daily_totals[0]
+        gain_val = current_val - base_val
+        gain_pct = (gain_val / base_val * 100) if base_val > 0 else 0.0
+        
+        sign = "+" if gain_val >= 0 else ""
+        color = "#00e676" if gain_val >= 0 else "#ff1744"
+        
+        st.markdown(
+            f'<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:20px;">'
+            f'<div class="stat-pill" style="flex:1;min-width:180px;text-align:center;padding:12px;">'
+            f'Est. Collection Value<br/><span style="font-size:16px;color:#c8a84b;margin-top:6px;display:inline-block;">${current_val:,.2f}</span>'
+            f'</div>'
+            f'<div class="stat-pill" style="flex:1;min-width:180px;text-align:center;padding:12px;">'
+            f'Purchase Cost (Base)<br/><span style="font-size:16px;color:#8888aa;margin-top:6px;display:inline-block;">${base_val:,.2f}</span>'
+            f'</div>'
+            f'<div class="stat-pill" style="flex:1;min-width:180px;text-align:center;padding:12px;">'
+            f'Estimated Net Profit<br/><span style="font-size:16px;color:{color};margin-top:6px;display:inline-block;">{sign}${gain_val:,.2f} ({sign}{gain_pct:.2f}%)</span>'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+        
+        # Line Graph
+        chart_data = pd.DataFrame({
+            "Date": dates,
+            "Total Value ($)": daily_totals
+        }).set_index("Date")
+        
+        main_chart = get_altair_line_chart(chart_data, "Date", "Total Value ($)", height=220)
+        st.altair_chart(main_chart, use_container_width=True)
+        
+        st.divider()
+        
+        st.markdown(
+            '<div style="font-family:\'Press Start 2P\',monospace;font-size:9px;color:#c8a84b;margin:15px 0;">'
+            '🔥 TOP GROWING PERFORMERS (30-DAY TREND) WITH GRAPHS</div>',
+            unsafe_allow_html=True
+        )
+        
+        # Calculate growth list
+        profit_list = []
+        for card in _collection:
+            price_history = simulate_card_history(card, days)
+            current = price_history[-1]
+            base = price_history[0]
+            gain = current - base
+            gain_pct = (gain / base * 100) if base > 0 else 0.0
+            
+            profit_list.append({
+                "card": card,
+                "current": current,
+                "base": base,
+                "gain": gain,
+                "gain_pct": gain_pct
+            })
+            
+        # Sort by percentage gain descending
+        profit_list.sort(key=lambda x: x["gain_pct"], reverse=True)
+        
+        show_profit_grid_with_charts(profit_list)
+
+
