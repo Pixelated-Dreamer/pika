@@ -21,6 +21,19 @@ st.set_page_config(page_title="PokéDex Collector", layout="wide", page_icon="�
 
 _DIR            = os.path.dirname(__file__)
 COLLECTION_FILE = os.path.join(_DIR, "collection.json")
+
+def load_env_key(key_name: str) -> str | None:
+    env_path = os.path.join(_DIR, ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            for line in f:
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k.strip() == key_name:
+                        return v.strip().strip("'\"")
+    return None
+
+POKEMON_API_KEY = load_env_key("POKEMON_API_KEY")
 TCG_API         = "https://api.tcgdex.net/v2"
 
 
@@ -423,14 +436,47 @@ def collection_ids() -> set[str]:
 
 
 # ── Price helpers ─────────────────────────────────────────────────────────────
-def best_price(card: dict) -> float | None:
+def best_price_official(card: dict) -> float | None:
+    # 1. Try TCGplayer (USD Market/Mid/Low)
+    tcgplayer = card.get("tcgplayer", {})
+    if tcgplayer:
+        prices = tcgplayer.get("prices", {})
+        if prices:
+            vals = []
+            for ptype, pdetails in prices.items():
+                if isinstance(pdetails, dict):
+                    for key in ["market", "mid", "low", "directLow", "high"]:
+                        val = pdetails.get(key)
+                        if val is not None:
+                            try:
+                                vals.append(float(val))
+                                break # Get first valid price under this print style
+                            except (ValueError, TypeError):
+                                pass
+            if vals:
+                return max(vals)
+
+    # 2. Fallback to Cardmarket
+    cardmarket = card.get("cardmarket", {})
+    if cardmarket:
+        prices = cardmarket.get("prices", {})
+        if prices:
+            for key in ["trendPrice", "averageSellPrice", "avg30", "avg7", "lowPrice"]:
+                val = prices.get(key)
+                if val is not None:
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        pass
+    return None
+
+
+def tcgdex_best_price(card: dict) -> float | None:
     pricing = card.get("pricing", {})
     if not pricing:
         return None
     
     prices = []
-    
-    # 1. Try TCGplayer (USD)
     tcgplayer = pricing.get("tcgplayer", {})
     if tcgplayer:
         for variant, details in tcgplayer.items():
@@ -445,7 +491,6 @@ def best_price(card: dict) -> float | None:
                     except (ValueError, TypeError):
                         pass
 
-    # 2. Fallback to Cardmarket (EUR/Converted)
     cardmarket = pricing.get("cardmarket", {})
     if cardmarket:
         market = cardmarket.get("trend") or cardmarket.get("avg") or cardmarket.get("low")
@@ -462,7 +507,26 @@ def fmt_price(p: float | None) -> str:
     return f"${p:.2f}" if p is not None else "N/A"
 
 
-def card_to_dict(raw: dict) -> dict:
+def card_to_dict_official(raw: dict) -> dict:
+    card_set = raw.get("set", {})
+    card_back_url = "https://raw.githubusercontent.com/the-epsd/twinleafgg/master/assets/cardback.png"
+    images = raw.get("images", {})
+    image_url = images.get("large") or images.get("small") or card_back_url
+    
+    return {
+        "id":            raw.get("id", ""),
+        "name":          raw.get("name", ""),
+        "set_name":      card_set.get("name", ""),
+        "set_id":        card_set.get("id", ""),
+        "number":        raw.get("number", ""),
+        "printed_total": card_set.get("printedTotal", "?"),
+        "language":      "en",
+        "price":         best_price_official(raw),
+        "image":         image_url,
+    }
+
+
+def tcgdex_card_to_dict(raw: dict, lang: str) -> dict:
     card_set = raw.get("set", {})
     image_base = raw.get("image", "")
     card_back_url = "https://raw.githubusercontent.com/the-epsd/twinleafgg/master/assets/cardback.png"
@@ -475,17 +539,16 @@ def card_to_dict(raw: dict) -> dict:
         "set_id":        card_set.get("id", ""),
         "number":        raw.get("localId", ""),
         "printed_total": card_set.get("cardCount", {}).get("total", "?"),
-        "language":      raw.get("language") or "en",
-        "price":         best_price(raw),
+        "language":      lang,
+        "price":         tcgdex_best_price(raw),
         "image":         image_url,
     }
 
 
-
 # ── API search ────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=3600)
-def cached_fetch_card_details(card_id: str, lang: str) -> dict | None:
-    url = f"{TCG_API}/{lang}/cards/{card_id}"
+def cached_fetch_tcgdex_details(card_id: str, lang: str) -> dict | None:
+    url = f"https://api.tcgdex.net/v2/{lang}/cards/{card_id}"
     try:
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
@@ -497,49 +560,95 @@ def cached_fetch_card_details(card_id: str, lang: str) -> dict | None:
     return None
 
 
-@st.cache_data(show_spinner=False, ttl=1800)
-def search_tcg_all(name: str, set_number: str = "", language: str = "en") -> list[dict]:
-    """
-    Fetch cards whose name contains `name` using TCGdex API.
-    Concurrently fetches detailed card info to get pricing and set details.
-    """
-    lang = language if language else "en"
-    url = f"{TCG_API}/{lang}/cards"
+def search_official_api(name: str, set_number: str = "") -> list[dict]:
+    """Fetch cards from pokemontcg.io."""
+    name_clean = name.replace('"', '').strip()
+    q_parts = [f'name:"*{name_clean}*"']
+    
+    target_total = None
+    if set_number.strip():
+        parts = [p.strip() for p in set_number.split("/")]
+        target_num = parts[0]
+        q_parts.append(f'number:"{target_num}"')
+        if len(parts) > 1:
+            target_total = parts[1]
+
+    q = " ".join(q_parts)
+    url = "https://api.pokemontcg.io/v2/cards"
+    headers = {}
+    if POKEMON_API_KEY:
+        headers["X-Api-Key"] = POKEMON_API_KEY
+        
+    params = {
+        "q": q,
+        "pageSize": 250
+    }
+    
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=15)
+        if r.status_code != 200:
+            return []
+        
+        data = r.json().get("data", [])
+        data.sort(key=lambda c: c.get("id", ""), reverse=True)
+        
+        if target_total:
+            data = [c for c in data if str(c.get("set", {}).get("printedTotal")) == target_total]
+            
+        return [card_to_dict_official(c) for c in data]
+    except Exception:
+        return []
+
+
+def search_tcgdex_api(name: str, set_number: str = "", lang: str = "ja") -> list[dict]:
+    """Fetch cards from TCGdex API."""
+    url = f"https://api.tcgdex.net/v2/{lang}/cards"
     
     try:
         r = requests.get(url, params={"name": name}, timeout=15)
         if r.status_code != 200:
             return []
         briefs = r.json()
-    except Exception as e:
-        st.error(f"Network error: {e}")
+    except Exception:
         return []
 
     if not briefs:
         return []
 
-    # Sort briefs so that modern sets and promo series (like svp, sv1, swsh...) are first
-    # Reversing alphabetically prioritizes 'svp', 'sv...', 'swsh...' over older sets 'base...'
     briefs.sort(key=lambda b: b.get("id", ""), reverse=True)
 
-    # Filter by set number locally for robustness
     if set_number.strip():
         target_num = set_number.split("/")[0].strip() if "/" in set_number else set_number.strip()
         briefs = [b for b in briefs if b.get("localId") == target_num]
 
-    # Capped to 300 cards to ensure comprehensive inclusion of all promo and special cards
-    briefs = briefs[:300]
+    briefs = briefs[:50]
 
     all_raw = []
-    # Concurrently fetch detailed card info
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
-        futures = {executor.submit(cached_fetch_card_details, brief["id"], lang): brief for brief in briefs}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        futures = {executor.submit(cached_fetch_tcgdex_details, brief["id"], lang): brief for brief in briefs}
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
             if res:
                 all_raw.append(res)
 
-    return all_raw
+    return [tcgdex_card_to_dict(c, lang) for c in all_raw]
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def search_tcg_all(name: str, set_number: str = "", language: str = "en") -> list[dict]:
+    if language == "en":
+        return search_official_api(name, set_number)
+    elif language == "ja":
+        return search_tcgdex_api(name, set_number, "ja")
+    else:  # "all"
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            fut_off = executor.submit(search_official_api, name, set_number)
+            fut_dex = executor.submit(search_tcgdex_api, name, set_number, "ja")
+            
+            res_off = fut_off.result() or []
+            res_dex = fut_dex.result() or []
+            
+            return res_off + res_dex
 
 
 
@@ -848,7 +957,7 @@ if active_page == "Searcher":
                 raw_cards = search_tcg_all(search_name, set_number.strip(), language=_lang_code)
 
             if raw_cards:
-                found = [card_to_dict(c) for c in raw_cards]
+                found = raw_cards
                 found.sort(key=lambda c: (c["price"] or 0), reverse=True)
                 st.session_state["search_results"] = found
             else:
