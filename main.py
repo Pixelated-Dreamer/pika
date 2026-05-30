@@ -1,4 +1,5 @@
 import streamlit as st
+import sqlite3
 import requests
 import json
 import os
@@ -23,6 +24,16 @@ _DIR            = os.path.dirname(__file__)
 COLLECTION_FILE = os.path.join(_DIR, "collection.json")
 
 def load_env_key(key_name: str) -> str | None:
+    # 1. Try streamlit secrets first (preferred in production)
+    try:
+        if key_name in st.secrets:
+            return st.secrets[key_name]
+    except Exception:
+        pass
+    # 2. Try os.environ (which Streamlit also populates)
+    if key_name in os.environ:
+        return os.environ[key_name]
+    # 3. Fallback to local .env file
     env_path = os.path.join(_DIR, ".env")
     if os.path.exists(env_path):
         with open(env_path, "r") as f:
@@ -35,6 +46,92 @@ def load_env_key(key_name: str) -> str | None:
 
 POKEMON_API_KEY = load_env_key("POKEMON_API_KEY")
 TCG_API         = "https://api.tcgdex.net/v2"
+
+GOOGLE_CLIENT_ID     = load_env_key("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = load_env_key("GOOGLE_CLIENT_SECRET")
+
+# Determine redirect URI dynamically (local vs production)
+REDIRECT_URI = load_env_key("REDIRECT_URI")
+if not REDIRECT_URI:
+    # Fallback to localhost if running locally, otherwise use production URL
+    if os.environ.get("STREAMLIT_SHARING_MODE") or os.environ.get("STREAMLIT_RUNTIME_ENV") == "cloud" or not os.path.exists(os.path.join(_DIR, ".env")):
+        REDIRECT_URI = "https://pokemonxotic.streamlit.app"
+    else:
+        REDIRECT_URI = "http://localhost:8501"
+
+def get_google_auth_url(client_id: str, redirect_uri: str) -> str:
+    base_url = "https://accounts.google.com/o/oauth2/v2/auth"
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "select_account"
+    }
+    query = "&".join(f"{k}={requests.utils.quote(v)}" for k, v in params.items())
+    return f"{base_url}?{query}"
+
+def get_google_user_info(code: str, client_id: str, client_secret: str, redirect_uri: str) -> dict | None:
+    token_url = "https://oauth2.googleapis.com/token"
+    data = {
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code"
+    }
+    try:
+        r = requests.post(token_url, data=data, timeout=10)
+        if r.status_code != 200:
+            return None
+        tokens = r.json()
+        access_token = tokens.get("access_token")
+        if not access_token:
+            return None
+            
+        user_info_url = "https://www.googleapis.com/oauth2/v3/userinfo"
+        headers = {"Authorization": f"Bearer {access_token}"}
+        ru = requests.get(user_info_url, headers=headers, timeout=10)
+        if ru.status_code == 200:
+            return ru.json()
+    except Exception:
+        pass
+    return None
+
+DB_FILE = os.path.join(_DIR, "database.db")
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            profile_photo TEXT NOT NULL
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS collections (
+            user_id INTEGER NOT NULL,
+            card_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            set_name TEXT NOT NULL,
+            set_id TEXT NOT NULL,
+            number TEXT NOT NULL,
+            printed_total TEXT NOT NULL,
+            language TEXT NOT NULL,
+            price REAL,
+            image TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            PRIMARY KEY (user_id, card_id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 
 
@@ -160,40 +257,6 @@ h2, h3, h4 {{
     text-transform: uppercase;
 }}
 
-/* ── Selectbox ─────────────────────────────────────────── */
-.stSelectbox label {{
-    font-family: 'Press Start 2P', monospace !important;
-    font-size: 9px !important;
-    color: #f5c518 !important;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-}}
-.stSelectbox div[data-baseweb="select"] > div {{
-    font-family: 'Press Start 2P', monospace !important;
-    font-size: 10px !important;
-    background: #080810 !important;
-    color: #e0d8b0 !important;
-    border: 2px solid #c8a84b55 !important;
-    border-radius: 0px !important;
-}}
-.stSelectbox div[data-baseweb="select"] svg {{
-    fill: #c8a84b !important;
-}}
-[data-baseweb="popover"] ul {{
-    background: #0d0d18 !important;
-    border: 2px solid #c8a84b !important;
-    border-radius: 0px !important;
-}}
-[data-baseweb="popover"] li {{
-    font-family: 'Press Start 2P', monospace !important;
-    font-size: 9px !important;
-    color: #c0c0a0 !important;
-    background: #0d0d18 !important;
-}}
-[data-baseweb="popover"] li:hover {{
-    background: #c8a84b22 !important;
-    color: #f5c518 !important;
-}}
 
 /* ── Images ──────────────────────────────────────────────── */
 [data-testid="stImage"] img {{
@@ -345,6 +408,7 @@ div[data-testid="column"]:has([data-testid="stImage"]):not(:has(.coll-card-info)
     width: auto !important;
     object-fit: contain !important;
 }}
+/* ── Sidebar Bottom Google Sign-in styles ─────────────────── */
 </style>
 
 
@@ -403,8 +467,54 @@ def fuzzy_correct(name: str) -> str | None:
 
 
 
+def register_or_login_user(email: str, name: str, profile_photo: str) -> int:
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    
+    # Check if user already exists
+    c.execute("SELECT id FROM users WHERE email = ?", (email,))
+    row = c.fetchone()
+    if row:
+        user_id = row[0]
+        # Update name/profile_photo in case they changed
+        c.execute("UPDATE users SET name = ?, profile_photo = ? WHERE id = ?", (name, profile_photo, user_id))
+        conn.commit()
+    else:
+        # Create new user
+        c.execute("INSERT INTO users (email, name, profile_photo) VALUES (?, ?, ?)", (email, name, profile_photo))
+        conn.commit()
+        user_id = c.lastrowid
+        
+    conn.close()
+    return user_id
+
+
 # ── Collection helpers ────────────────────────────────────────────────────────
 def load_collection() -> list[dict]:
+    user_id = st.session_state.get("user_id")
+    if user_id is not None:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT * FROM collections WHERE user_id = ?", (user_id,))
+        rows = c.fetchall()
+        conn.close()
+        return [
+            {
+                "id":            row["card_id"],
+                "name":          row["name"],
+                "set_name":      row["set_name"],
+                "set_id":        row["set_id"],
+                "number":        row["number"],
+                "printed_total": row["printed_total"],
+                "language":      row["language"],
+                "price":         row["price"],
+                "image":         row["image"],
+            }
+            for row in rows
+        ]
+    
+    # Guest mode fallback to collection.json
     if not os.path.exists(COLLECTION_FILE):
         return []
     try:
@@ -416,11 +526,40 @@ def load_collection() -> list[dict]:
 
 
 def save_collection(col: list[dict]):
+    # Note: SQLite users do not write directly to collection.json, but guests do!
     with open(COLLECTION_FILE, "w") as f:
         json.dump(col, f, indent=2)
 
 
 def add_to_collection(card: dict):
+    user_id = st.session_state.get("user_id")
+    if user_id is not None:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        try:
+            c.execute('''
+                INSERT INTO collections (user_id, card_id, name, set_name, set_id, number, printed_total, language, price, image)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                user_id,
+                card["id"],
+                card["name"],
+                card["set_name"],
+                card["set_id"],
+                card["number"],
+                card["printed_total"],
+                card["language"],
+                card["price"],
+                card["image"]
+            ))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            pass
+        finally:
+            conn.close()
+        return
+
+    # Guest mode fallback
     col = load_collection()
     if not any(c["id"] == card["id"] for c in col):
         col.append(card)
@@ -428,6 +567,16 @@ def add_to_collection(card: dict):
 
 
 def remove_from_collection(card_id: str):
+    user_id = st.session_state.get("user_id")
+    if user_id is not None:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("DELETE FROM collections WHERE user_id = ? AND card_id = ?", (user_id, card_id))
+        conn.commit()
+        conn.close()
+        return
+
+    # Guest mode fallback
     save_collection([c for c in load_collection() if c["id"] != card_id])
 
 
@@ -867,6 +1016,30 @@ if "accepted_fuzzy" not in st.session_state:
     st.session_state["accepted_fuzzy"] = False
 
 
+# Check for Google Sign-In redirect auth code
+if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and "code" in st.query_params:
+    auth_code = st.query_params["code"]
+    with st.spinner("Signing in with Google..."):
+        user_info = get_google_user_info(auth_code, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, REDIRECT_URI)
+        if user_info:
+            g_email = user_info.get("email", "")
+            g_name = user_info.get("name", "Google User")
+            g_picture = user_info.get("picture", "https://api.dicebear.com/7.x/pixel-art/svg?seed=ash")
+            
+            user_id = register_or_login_user(g_email, g_name, g_picture)
+            st.session_state["user_id"] = user_id
+            st.session_state["username"] = g_name
+            st.session_state["email"] = g_email
+            st.session_state["profile_photo"] = g_picture
+            st.session_state["show_login_dialog"] = False
+            
+            # Clean url parameters and refresh
+            st.query_params.clear()
+            st.rerun()
+        else:
+            st.error("Google Authentication failed. Please try again.")
+            st.query_params.clear()
+
 _owned      = collection_ids()
 _collection = load_collection()
 
@@ -902,9 +1075,187 @@ with st.sidebar:
         _lang_code = _lang_map[language_choice]
         st.divider()
 
-    # Cards list removed from sidebar as requested
-    pass
+    # ── Sidebar Bottom Google Sign-in ─────────────────────────────────────────
+    st.markdown("<div style='height: 80px;'></div>", unsafe_allow_html=True)  # Spacer to push to bottom
+    
+    current_user_id = st.session_state.get("user_id")
+    if current_user_id is None:
+        if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+            google_auth_url = get_google_auth_url(GOOGLE_CLIENT_ID, REDIRECT_URI)
+            st.link_button("SIGN IN WITH GOOGLE", google_auth_url, use_container_width=True)
+        else:
+            if st.button("SIGN IN", key="btn_signin"):
+                st.session_state["show_login_dialog"] = True
+                st.rerun()
+    else:
+        photo_url = st.session_state.get("profile_photo", "https://api.dicebear.com/7.x/pixel-art/svg?seed=ash")
+        
+        # Inject dynamic CSS specifically for this user's avatar using sibling styling
+        st.markdown(f"""
+        <style>
+        div:has(> #profile-pic-marker) + div button {{
+            width: 48px !important;
+            height: 48px !important;
+            border-radius: 50% !important;
+            overflow: hidden !important;
+            background-image: url('{photo_url}') !important;
+            background-size: cover !important;
+            background-repeat: no-repeat !important;
+            background-position: center !important;
+            border: 2px solid #c8a84b !important;
+            box-shadow: 0 0 10px #c8a84b55 !important;
+            font-size: 0px !important;
+            color: transparent !important;
+            padding: 0 !important;
+            display: block !important;
+            margin: 0 auto !important;
+        }}
+        div:has(> #profile-pic-marker) + div button:hover {{
+            border-color: #f5c518 !important;
+            box-shadow: 0 0 15px #f5c518aa !important;
+            transform: scale(1.05) !important;
+        }}
+        </style>
+        """, unsafe_allow_html=True)
+        
+        st.markdown('<span id="profile-pic-marker"></span>', unsafe_allow_html=True)
+        if st.button(" ", key="btn_profile_avatar"):
+            st.session_state["show_profile_options"] = not st.session_state.get("show_profile_options", False)
+            st.rerun()
+        
+        if st.session_state.get("show_profile_options"):
+            st.markdown("<div style='text-align: center; margin-top: 8px;'>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-family:\"Press Start 2P\",monospace;font-size:6px;color:#f5c518;margin-bottom:6px;'>{st.session_state.get('username')}</div>", unsafe_allow_html=True)
+            
+            # Reset guest collection option if they have any cards in local JSON
+            guest_cards = []
+            if os.path.exists(COLLECTION_FILE):
+                try:
+                    with open(COLLECTION_FILE) as f:
+                        g_data = json.load(f)
+                        if isinstance(g_data, list):
+                            guest_cards = g_data
+                except Exception:
+                    pass
+            
+            if guest_cards:
+                if st.button("📥 SYNC GUEST DATA", key="btn_sync_guest"):
+                    conn = sqlite3.connect(DB_FILE)
+                    c = conn.cursor()
+                    synced_count = 0
+                    for card in guest_cards:
+                        try:
+                            c.execute('''
+                                INSERT INTO collections (user_id, card_id, name, set_name, set_id, number, printed_total, language, price, image)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (
+                                current_user_id,
+                                card["id"],
+                                card["name"],
+                                card["set_name"],
+                                card["set_id"],
+                                card["number"],
+                                card["printed_total"],
+                                card["language"],
+                                card["price"],
+                                card["image"]
+                            ))
+                            synced_count += 1
+                        except sqlite3.IntegrityError:
+                            pass
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Synced {synced_count} cards!")
+                    st.rerun()
 
+            if st.button("LOG OUT", key="btn_logout"):
+                st.session_state["user_id"] = None
+                st.session_state["username"] = None
+                st.session_state["email"] = None
+                st.session_state["profile_photo"] = None
+                st.session_state["show_profile_options"] = False
+                st.rerun()
+            if st.button("RESET DATA", key="btn_reset"):
+                conn = sqlite3.connect(DB_FILE)
+                c = conn.cursor()
+                c.execute("DELETE FROM collections WHERE user_id = ?", (current_user_id,))
+                conn.commit()
+                conn.close()
+                st.session_state["show_profile_options"] = False
+                st.success("Data reset!")
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
+
+# ── Google Sign-in Dialog ─────────────────────────────────────────────────────
+if st.session_state.get("show_login_dialog"):
+    with st.container(border=True):
+        st.markdown("<h3 style='text-align:center;color:#f5c518;font-family:\"Press Start 2P\",monospace;font-size:12px;margin-bottom:15px;'>🌐 SIGN IN WITH GOOGLE</h3>", unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            g_email = st.text_input("GOOGLE EMAIL", value="ash.ketchum@gmail.com", placeholder="e.g. trainer@gmail.com")
+        with col2:
+            g_name = st.text_input("FULL NAME", value="Ash Ketchum", placeholder="e.g. Ash Ketchum")
+            
+        st.markdown("<div style='font-family:\"Press Start 2P\",monospace;font-size:8px;color:#888;margin:12px 0 6px;'>CHOOSE YOUR GOOGLE AVATAR:</div>", unsafe_allow_html=True)
+        
+        avatars = [
+            "https://api.dicebear.com/7.x/pixel-art/svg?seed=ash",
+            "https://api.dicebear.com/7.x/pixel-art/svg?seed=misty",
+            "https://api.dicebear.com/7.x/pixel-art/svg?seed=brock",
+            "https://api.dicebear.com/7.x/pixel-art/svg?seed=red"
+        ]
+        avatar_choice = st.selectbox("GOOGLE PROFILE PHOTO", ["Ash (Pikachu Trainer)", "Misty (Water Master)", "Brock (Rock Leader)", "Red (Champion)"])
+        avatar_map = {
+            "Ash (Pikachu Trainer)": avatars[0],
+            "Misty (Water Master)": avatars[1],
+            "Brock (Rock Leader)": avatars[2],
+            "Red (Champion)": avatars[3]
+        }
+        
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("✓ CONTINUE TO SIGN IN", key="btn_confirm_login"):
+                if not g_email.strip() or not g_name.strip():
+                    st.error("Please enter email and name.")
+                else:
+                    user_id = register_or_login_user(g_email.strip(), g_name.strip(), avatar_map[avatar_choice])
+                    st.session_state["user_id"] = user_id
+                    st.session_state["username"] = g_name.strip()
+                    st.session_state["email"] = g_email.strip()
+                    st.session_state["profile_photo"] = avatar_map[avatar_choice]
+                    st.session_state["show_login_dialog"] = False
+                    st.success(f"Welcome, {g_name}!")
+                    st.rerun()
+        with c2:
+            if st.button("✗ CANCEL", key="btn_cancel_login"):
+                st.session_state["show_login_dialog"] = False
+                st.rerun()
+
+        # Real Google Sign-In setup guide
+        st.markdown("""
+        <div style="border: 2px solid #c8a84b33; padding: 12px; border-radius: 8px; background: #080810; margin-top:20px;">
+            <div style="color:#f5c518; font-family:'Press Start 2P',monospace; font-size:7px; margin-bottom:8px;">ℹ️ ENABLE ACTUAL GOOGLE SIGN-IN</div>
+            <div style="color:#888; font-size:9px; line-height:1.5; font-family:'Inter',sans-serif;">
+                To login using your real Google account profile picture and email, configure free developer keys:
+                <ol style="margin-left:-20px; margin-top:5px;">
+                    <li>Go to the <a href="https://console.cloud.google.com" target="_blank" style="color:#f5c518; text-decoration:underline;">Google Cloud Console</a>.</li>
+                    <li>Set up your <b>OAuth Consent Screen</b> (External/Internal).</li>
+                    <li>Go to <b>Credentials</b> -> <b>Create Credentials</b> -> <b>OAuth Client ID</b> (Web application).</li>
+                    <li>Add <code>http://localhost:8501</code> to <b>Authorized redirect URIs</b>.</li>
+                    <li>Copy your Client ID and Client Secret, and save them in your <code>.env</code> file:</li>
+                </ol>
+            </div>
+            <code style="color:#f5c518; font-size:8px; font-family:monospace; background:#121220; padding:6px; display:block; border-radius:4px; margin-top:5px;">
+            GOOGLE_CLIENT_ID = "your-client-id"<br/>
+            GOOGLE_CLIENT_SECRET = "your-client-secret"
+            </code>
+        </div>
+        """, unsafe_allow_html=True)
+    st.divider()
 
 
 # ── Main Content Routing ──────────────────────────────────────────────────────
