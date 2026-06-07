@@ -10,19 +10,14 @@ import concurrent.futures
 from datetime import datetime, timedelta
 import random
 import altair as alt
-
-
 try:
     from streamlit_option_menu import option_menu
     HAS_OPTION_MENU = True
 except ImportError:
     HAS_OPTION_MENU = False
-
 st.set_page_config(page_title="PokéDex Collector", layout="wide", page_icon="🎴")
-
 _DIR            = os.path.dirname(__file__)
 COLLECTION_FILE = os.path.join(_DIR, "collection.json")
-
 def load_env_key(key_name: str) -> str | None:
     # 1. Try streamlit secrets first (preferred in production)
     try:
@@ -43,22 +38,30 @@ def load_env_key(key_name: str) -> str | None:
                     if k.strip() == key_name:
                         return v.strip().strip("'\"")
     return None
-
 POKEMON_API_KEY = load_env_key("POKEMON_API_KEY")
 TCG_API         = "https://api.tcgdex.net/v2"
-
 GOOGLE_CLIENT_ID     = load_env_key("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = load_env_key("GOOGLE_CLIENT_SECRET")
-
 # Determine redirect URI dynamically (local vs production)
 REDIRECT_URI = load_env_key("REDIRECT_URI")
+if not REDIRECT_URI:
+    # Try to dynamically get host from Streamlit context headers (available in modern Streamlit)
+    try:
+        import streamlit as st
+        host = st.context.headers.get("host")
+        if host:
+            if "localhost" in host or "127.0.0.1" in host or host.startswith("192.168.") or host.startswith("10."):
+                REDIRECT_URI = f"http://{host}"
+            else:
+                REDIRECT_URI = f"https://{host}"
+    except Exception:
+        pass
 if not REDIRECT_URI:
     # Fallback to localhost if running locally, otherwise use production URL
     if os.environ.get("STREAMLIT_SHARING_MODE") or os.environ.get("STREAMLIT_RUNTIME_ENV") == "cloud" or not os.path.exists(os.path.join(_DIR, ".env")):
         REDIRECT_URI = "https://pokemonxotic.streamlit.app"
     else:
         REDIRECT_URI = "http://localhost:8501"
-
 def get_google_auth_url(client_id: str, redirect_uri: str) -> str:
     base_url = "https://accounts.google.com/o/oauth2/v2/auth"
     params = {
@@ -71,7 +74,6 @@ def get_google_auth_url(client_id: str, redirect_uri: str) -> str:
     }
     query = "&".join(f"{k}={requests.utils.quote(v)}" for k, v in params.items())
     return f"{base_url}?{query}"
-
 def get_google_user_info(code: str, client_id: str, client_secret: str, redirect_uri: str) -> dict | None:
     token_url = "https://oauth2.googleapis.com/token"
     data = {
@@ -98,9 +100,7 @@ def get_google_user_info(code: str, client_id: str, client_secret: str, redirect
     except Exception:
         pass
     return None
-
 DB_FILE = os.path.join(_DIR, "database.db")
-
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -130,11 +130,7 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
-
 init_db()
-
-
-
 # ── Background images ─────────────────────────────────────────────────────────
 def _b64(name: str) -> str:
     path = os.path.join(_DIR, name)
@@ -142,10 +138,8 @@ def _b64(name: str) -> str:
         return ""
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode()
-
 _pika   = _b64("pikachu-transparent-32599.png")
 _gengar = _b64("Gengar-PNG-Picture.png")
-
 _extra_imgs = _extra_sz = _extra_pos = _extra_rep = _extra_att = ""
 if _pika:
     _extra_imgs += f'url("data:image/png;base64,{_pika}"), '
@@ -155,7 +149,6 @@ if _gengar:
     _extra_imgs += f'url("data:image/png;base64,{_gengar}"), '
     _extra_sz   += "170px, "; _extra_pos += "98% 97%, "
     _extra_rep  += "no-repeat, "; _extra_att += "fixed, "
-
 _bg_image = (
     _extra_imgs
     + "repeating-linear-gradient(0deg,transparent,transparent 23px,rgba(255,215,0,.04) 24px), "
@@ -165,13 +158,10 @@ _bg_size = _extra_sz + "auto, auto"
 _bg_pos  = _extra_pos + "0 0, 0 0"
 _bg_rep  = _extra_rep + "repeat, repeat"
 _bg_att  = _extra_att + "fixed, fixed"
-
-
 # ── Styling ───────────────────────────────────────────────────────────────────
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
-
 /* ── Base ─────────────────────────────────────────────────── */
 [data-testid="stAppViewContainer"] {{
     background-color: #0d0d18;
@@ -186,7 +176,6 @@ st.markdown(f"""
     background-color: #080810;
     border-right: 2px solid #c8a84b55;
 }}
-
 /* ── Headings ─────────────────────────────────────────────── */
 h1, h2, h3, h4 {{
     font-family: 'Press Start 2P', monospace !important;
@@ -201,7 +190,6 @@ h2, h3, h4 {{
     color: #c8a84b !important;
     font-size: 10px !important;
 }}
-
 /* ── Buttons ─────────────────────────────────────────────── */
 .stButton > button {{
     font-family: 'Press Start 2P', monospace !important;
@@ -226,7 +214,6 @@ h2, h3, h4 {{
     transform: translate(2px, 2px);
     box-shadow: 1px 1px 0px #5c4a1a;
 }}
-
 /* ── Text inputs ─────────────────────────────────────────── */
 .stTextInput input {{
     font-family: 'Press Start 2P', monospace !important;
@@ -256,8 +243,6 @@ h2, h3, h4 {{
     letter-spacing: 1px;
     text-transform: uppercase;
 }}
-
-
 /* ── Images ──────────────────────────────────────────────── */
 [data-testid="stImage"] img {{
     border: 2px solid #c8a84b44;
@@ -271,11 +256,9 @@ h2, h3, h4 {{
     box-shadow: 0 6px 0px #c8a84b55, 0 8px 20px #00000088;
     border-color: #f5c518aa;
 }}
-
 /* ── Misc ────────────────────────────────────────────────── */
 hr {{ border-color: #c8a84b33; border-width: 2px; margin: 12px 0; }}
 .stCaption {{ color: #5555a0 !important; font-family: 'Press Start 2P', monospace !important; font-size: 7px !important; }}
-
 /* ── Stat pills ──────────────────────────────────────────── */
 .stat-pill {{
     display: inline-block;
@@ -289,7 +272,6 @@ hr {{ border-color: #c8a84b33; border-width: 2px; margin: 12px 0; }}
     margin: 2px 4px 2px 0;
 }}
 .stat-pill span {{ color: #f5c518; }}
-
 /* ── Fuzzy hint ─────────────────────────────────────────── */
 .fuzzy-hint {{
     font-family: 'Press Start 2P', monospace;
@@ -301,7 +283,6 @@ hr {{ border-color: #c8a84b33; border-width: 2px; margin: 12px 0; }}
     background: #c8a84b0f;
 }}
 .fuzzy-hint em {{ color: #f5c518; font-style: normal; }}
-
 /* ── Sidebar card thumbs ─────────────────────────────────── */
 .sb-card {{
     display: flex;
@@ -328,7 +309,6 @@ hr {{ border-color: #c8a84b33; border-width: 2px; margin: 12px 0; }}
     color: #c8a84b;
     font-size: 10px;
 }}
-
 /* ── Collection set header ───────────────────────────────── */
 .set-header {{
     font-family: 'Inter', sans-serif;
@@ -341,7 +321,6 @@ hr {{ border-color: #c8a84b33; border-width: 2px; margin: 12px 0; }}
     padding-bottom: 4px;
     border-bottom: 1px solid #2a2a40;
 }}
-
 /* ── Collection grid card info ───────────────────────────── */
 .coll-card-info {{
     font-family: 'Press Start 2P', monospace;
@@ -364,7 +343,6 @@ hr {{ border-color: #c8a84b33; border-width: 2px; margin: 12px 0; }}
     color: #b0b0cc;
     font-size: 5px;
 }}
-
 /* ── Collection grid minus button ────────────────────────── */
 div[data-testid="column"]:has(.coll-card-info) .stButton > button {{
     width: 60px !important;
@@ -384,7 +362,6 @@ div[data-testid="column"]:has(.coll-card-info) .stButton > button:hover {{
     border-color: #ff5555 !important;
     box-shadow: 2px 2px 0px #5c1a1a !important;
 }}
-
 /* ── Search results grid alignment ────────────────────────── */
 div[data-testid="column"]:has([data-testid="stImage"]):not(:has(.coll-card-info)) {{
     border: 2px solid #c8a84b33 !important;
@@ -410,11 +387,7 @@ div[data-testid="column"]:has([data-testid="stImage"]):not(:has(.coll-card-info)
 }}
 /* ── Sidebar Bottom Google Sign-in styles ─────────────────── */
 </style>
-
-
 """, unsafe_allow_html=True)
-
-
 # ── Pokémon name list ─────────────────────────────────────────────────────────
 @st.cache_data
 def load_pokemon_names() -> list[str]:
@@ -436,11 +409,8 @@ def load_pokemon_names() -> list[str]:
     except Exception as e:
         st.error(f"❌ **Error loading pokemon.csv:** {e}")
         return []
-
 _POKEMON_NAMES = load_pokemon_names()
 _POKEMON_NAMES_LOWER = [n.lower() for n in _POKEMON_NAMES]
-
-
 def fuzzy_correct(name: str) -> str | None:
     """Return the closest Pokémon name if `name` isn't an exact match."""
     if not name or not _POKEMON_NAMES:
@@ -463,10 +433,6 @@ def fuzzy_correct(name: str) -> str | None:
         idx = _POKEMON_NAMES_LOWER.index(matches[0])
         return _POKEMON_NAMES[idx]
     return None
-
-
-
-
 def register_or_login_user(email: str, name: str, profile_photo: str) -> int:
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -487,8 +453,6 @@ def register_or_login_user(email: str, name: str, profile_photo: str) -> int:
         
     conn.close()
     return user_id
-
-
 # ── Collection helpers ────────────────────────────────────────────────────────
 def load_collection() -> list[dict]:
     user_id = st.session_state.get("user_id")
@@ -523,14 +487,10 @@ def load_collection() -> list[dict]:
             return data if isinstance(data, list) else []
     except (json.JSONDecodeError, IOError):
         return []
-
-
 def save_collection(col: list[dict]):
     # Note: SQLite users do not write directly to collection.json, but guests do!
     with open(COLLECTION_FILE, "w") as f:
         json.dump(col, f, indent=2)
-
-
 def add_to_collection(card: dict):
     user_id = st.session_state.get("user_id")
     if user_id is not None:
@@ -558,14 +518,11 @@ def add_to_collection(card: dict):
         finally:
             conn.close()
         return
-
     # Guest mode fallback
     col = load_collection()
     if not any(c["id"] == card["id"] for c in col):
         col.append(card)
         save_collection(col)
-
-
 def remove_from_collection(card_id: str):
     user_id = st.session_state.get("user_id")
     if user_id is not None:
@@ -575,15 +532,10 @@ def remove_from_collection(card_id: str):
         conn.commit()
         conn.close()
         return
-
     # Guest mode fallback
     save_collection([c for c in load_collection() if c["id"] != card_id])
-
-
 def collection_ids() -> set[str]:
     return {c["id"] for c in load_collection()}
-
-
 # ── Price helpers ─────────────────────────────────────────────────────────────
 def best_price_official(card: dict) -> float | None:
     # 1. Try TCGplayer (USD Market/Mid/Low)
@@ -604,7 +556,6 @@ def best_price_official(card: dict) -> float | None:
                                 pass
             if vals:
                 return max(vals)
-
     # 2. Fallback to Cardmarket
     cardmarket = card.get("cardmarket", {})
     if cardmarket:
@@ -618,8 +569,6 @@ def best_price_official(card: dict) -> float | None:
                     except (ValueError, TypeError):
                         pass
     return None
-
-
 def tcgdex_best_price(card: dict) -> float | None:
     pricing = card.get("pricing", {})
     if not pricing:
@@ -639,7 +588,6 @@ def tcgdex_best_price(card: dict) -> float | None:
                         prices.append(float(val))
                     except (ValueError, TypeError):
                         pass
-
     cardmarket = pricing.get("cardmarket", {})
     if cardmarket:
         market = cardmarket.get("trend") or cardmarket.get("avg") or cardmarket.get("low")
@@ -650,12 +598,8 @@ def tcgdex_best_price(card: dict) -> float | None:
                 pass
                 
     return max(prices) if prices else None
-
-
 def fmt_price(p: float | None) -> str:
     return f"${p:.2f}" if p is not None else "N/A"
-
-
 def card_to_dict_official(raw: dict) -> dict:
     card_set = raw.get("set", {})
     card_back_url = "https://raw.githubusercontent.com/the-epsd/twinleafgg/master/assets/cardback.png"
@@ -673,13 +617,11 @@ def card_to_dict_official(raw: dict) -> dict:
         "price":         best_price_official(raw),
         "image":         image_url,
     }
-
-
 def tcgdex_card_to_dict(raw: dict, lang: str) -> dict:
     card_set = raw.get("set", {})
     image_base = raw.get("image", "")
     card_back_url = "https://raw.githubusercontent.com/the-epsd/twinleafgg/master/assets/cardback.png"
-    image_url = f"{image_base}/low.png" if image_base else card_back_url
+    image_url = f"{image_base}/high.png" if image_base else card_back_url
     
     return {
         "id":            raw.get("id", ""),
@@ -692,8 +634,6 @@ def tcgdex_card_to_dict(raw: dict, lang: str) -> dict:
         "price":         tcgdex_best_price(raw),
         "image":         image_url,
     }
-
-
 # ── API search ────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=3600)
 def cached_fetch_tcgdex_details(card_id: str, lang: str) -> dict | None:
@@ -707,8 +647,6 @@ def cached_fetch_tcgdex_details(card_id: str, lang: str) -> dict | None:
     except Exception:
         pass
     return None
-
-
 def search_official_api(name: str, set_number: str = "") -> list[dict]:
     """Fetch cards from pokemontcg.io."""
     name_clean = name.replace('"', '').strip()
@@ -721,7 +659,6 @@ def search_official_api(name: str, set_number: str = "") -> list[dict]:
         q_parts.append(f'number:"{target_num}"')
         if len(parts) > 1:
             target_total = parts[1]
-
     q = " ".join(q_parts)
     url = "https://api.pokemontcg.io/v2/cards"
     headers = {}
@@ -747,31 +684,59 @@ def search_official_api(name: str, set_number: str = "") -> list[dict]:
         return [card_to_dict_official(c) for c in data]
     except Exception:
         return []
-
-
+@st.cache_data(show_spinner=False, ttl=86400 * 30)  # Cache for 30 days
+def translate_pokemon_name_to_japanese(english_name: str) -> str:
+    """Translate an English Pokémon name to its Japanese name using PokeAPI."""
+    # Clean the name to lowercase and replace spaces/dots
+    clean_name = english_name.strip().lower().replace(" ", "-").replace(".", "")
+    
+    # Handle known common naming edge cases
+    name_map = {
+        "mr-mime": "mr-mime",
+        "mime-jr": "mime-jr",
+        "flabebe": "flabebe",
+        "type-null": "type-null",
+    }
+    clean_name = name_map.get(clean_name, clean_name)
+    
+    url = f"https://pokeapi.co/api/v2/pokemon-species/{clean_name}"
+    try:
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            for n in data.get("names", []):
+                if n.get("language", {}).get("name") == "ja-hrkt":
+                    return n.get("name")
+    except Exception:
+        pass
+    return english_name  # Fallback to the original name if translation fails
 def search_tcgdex_api(name: str, set_number: str = "", lang: str = "ja") -> list[dict]:
     """Fetch cards from TCGdex API."""
     url = f"https://api.tcgdex.net/v2/{lang}/cards"
     
+    # Automatically translate English names to Japanese when querying the Japanese endpoint
+    search_term = name.strip()
+    if lang == "ja":
+        search_term = translate_pokemon_name_to_japanese(search_term)
+    else:
+        # TCGdex is case-sensitive for English, so ensure it is capitalized
+        if search_term and search_term[0].islower():
+            search_term = search_term.capitalize()
+            
     try:
-        r = requests.get(url, params={"name": name}, timeout=15)
+        r = requests.get(url, params={"name": search_term}, timeout=15)
         if r.status_code != 200:
             return []
         briefs = r.json()
     except Exception:
         return []
-
     if not briefs:
         return []
-
     briefs.sort(key=lambda b: b.get("id", ""), reverse=True)
-
     if set_number.strip():
         target_num = set_number.split("/")[0].strip() if "/" in set_number else set_number.strip()
         briefs = [b for b in briefs if b.get("localId") == target_num]
-
-    briefs = briefs[:50]
-
+    briefs = briefs[:250]
     all_raw = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
         futures = {executor.submit(cached_fetch_tcgdex_details, brief["id"], lang): brief for brief in briefs}
@@ -779,10 +744,7 @@ def search_tcgdex_api(name: str, set_number: str = "", lang: str = "ja") -> list
             res = future.result()
             if res:
                 all_raw.append(res)
-
     return [tcgdex_card_to_dict(c, lang) for c in all_raw]
-
-
 @st.cache_data(show_spinner=False, ttl=1800)
 def search_tcg_all(name: str, set_number: str = "", language: str = "en") -> list[dict]:
     if language == "en":
@@ -798,37 +760,28 @@ def search_tcg_all(name: str, set_number: str = "", language: str = "en") -> lis
             res_dex = fut_dex.result() or []
             
             return res_off + res_dex
-
-
-
-
 # ── Card grid ─────────────────────────────────────────────────────────────────
 _REGIONAL_PREFIXES = [
     "Galarian", "Alolan", "Hisuian", "Paldean", "Unovan", "Shadow", "Radiant",
 ]
-
 def show_card_grid(cards: list[dict], mode: str, owned: set[str], num_cols: int = 4):
     if not cards:
         st.info("No cards to display.")
         return
-
     cols = st.columns(num_cols)
     for i, card in enumerate(cards):
         with cols[i % num_cols]:
             card_back_url = "https://raw.githubusercontent.com/the-epsd/twinleafgg/master/assets/cardback.png"
             img_url = card.get("image") or card_back_url
             st.image(img_url, use_container_width=True)
-
             st.markdown(
                 f'<div style="font-family:\'Press Start 2P\',monospace;font-size:7px;'
                 f'color:#fff;margin:6px 0 2px;word-break:break-word;line-height:1.6;">'
                 f'{card["name"]}</div>',
                 unsafe_allow_html=True,
             )
-
             sn   = f"{card['number']}/{card['printed_total']}"
             lang = (card.get("language") or "en").upper()
-
             lang_html = ""
             if lang != "EN":
                 lang_html = (
@@ -836,7 +789,6 @@ def show_card_grid(cards: list[dict], mode: str, owned: set[str], num_cols: int 
                     f'font-size:6px;background:#1a2a1a;color:#7fff7f;'
                     f'border:1px solid #3f7f3f;padding:2px 4px;">{lang}</span>'
                 )
-
             st.markdown(
                 f'<div style="display:flex;align-items:center;justify-content:space-between;'
                 f'font-family:\'Press Start 2P\',monospace;font-size:7px;margin-bottom:6px;">'
@@ -845,7 +797,6 @@ def show_card_grid(cards: list[dict], mode: str, owned: set[str], num_cols: int 
                 f'</div>',
                 unsafe_allow_html=True,
             )
-
             if mode == "search":
                 if card["id"] in owned:
                     st.markdown(
@@ -867,10 +818,7 @@ def show_card_grid(cards: list[dict], mode: str, owned: set[str], num_cols: int 
                     on_click=remove_from_collection,
                     args=(card["id"],),
                 )
-
             st.write("")
-
-
 def show_collection_grid(cards: list[dict], owned: set[str], num_cols: int = 8):
     """
     Dense grid for the full collection view.
@@ -879,18 +827,15 @@ def show_collection_grid(cards: list[dict], owned: set[str], num_cols: int = 8):
     if not cards:
         st.info("No cards to display.")
         return
-
     cols = st.columns(num_cols, gap="small")
     for i, card in enumerate(cards):
         with cols[i % num_cols]:
             card_back_url = "https://raw.githubusercontent.com/the-epsd/twinleafgg/master/assets/cardback.png"
             img_url = card.get("image") or card_back_url
             st.image(img_url, use_container_width=True)
-
             sn        = f"{card['number']}/{card['printed_total']}"
             price_str = fmt_price(card["price"])
             pack_name = card.get("set_name", "")
-
             st.markdown(
                 f'<div class="coll-card-info">'
                 f'<div class="setnum">{sn}</div>'
@@ -899,15 +844,12 @@ def show_collection_grid(cards: list[dict], owned: set[str], num_cols: int = 8):
                 f'</div>',
                 unsafe_allow_html=True,
             )
-
             st.button(
                 "－",
                 key=f"rem_coll_{card['id']}_{i}",
                 on_click=remove_from_collection,
                 args=(card["id"],),
             )
-
-
 # ── Profit & History Helpers ──────────────────────────────────────────────────
 def simulate_card_history(card: dict, days: int = 30) -> list[float]:
     current_price = card.get("price") or 0.0
@@ -927,8 +869,6 @@ def simulate_card_history(card: dict, days: int = 30) -> list[float]:
         history[i] = round(history[i+1] / (1.0 + change), 2)
         
     return history
-
-
 def get_altair_line_chart(df: pd.DataFrame, x_col: str, y_col: str, height: int = 220):
     min_val = float(df[y_col].min())
     max_val = float(df[y_col].max())
@@ -954,8 +894,6 @@ def get_altair_line_chart(df: pd.DataFrame, x_col: str, y_col: str, height: int 
         domain=False
     )
     return chart
-
-
 def show_profit_grid_with_charts(profits: list[dict]):
     if not profits:
         st.info("No cards to display.")
@@ -1003,10 +941,6 @@ def show_profit_grid_with_charts(profits: list[dict]):
         
         st.markdown('</div>', unsafe_allow_html=True)
         st.write("")
-
-
-
-
 # ── Session state ─────────────────────────────────────────────────────────────
 if "search_results" not in st.session_state:
     st.session_state["search_results"] = []
@@ -1014,8 +948,6 @@ if "fuzzy_suggestion" not in st.session_state:
     st.session_state["fuzzy_suggestion"] = None
 if "accepted_fuzzy" not in st.session_state:
     st.session_state["accepted_fuzzy"] = False
-
-
 # Check for Google Sign-In redirect auth code
 if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and "code" in st.query_params:
     auth_code = st.query_params["code"]
@@ -1039,11 +971,8 @@ if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and "code" in st.query_params:
         else:
             st.error("Google Authentication failed. Please try again.")
             st.query_params.clear()
-
 _owned      = collection_ids()
 _collection = load_collection()
-
-
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     options = ["Searcher", "My Collection", "Profit Selection"]
@@ -1058,7 +987,6 @@ with st.sidebar:
         active_page = st.sidebar.radio("NAVIGATE", options)
         
     st.divider()
-
     _lang_code = "en"
     if active_page == "Searcher":
         language_choice = st.selectbox(
@@ -1074,7 +1002,6 @@ with st.sidebar:
         }
         _lang_code = _lang_map[language_choice]
         st.divider()
-
     # ── Sidebar Bottom Google Sign-in ─────────────────────────────────────────
     st.markdown("<div style='height: 80px;'></div>", unsafe_allow_html=True)  # Spacer to push to bottom
     
@@ -1167,7 +1094,6 @@ with st.sidebar:
                     conn.close()
                     st.success(f"Synced {synced_count} cards!")
                     st.rerun()
-
             if st.button("LOG OUT", key="btn_logout"):
                 st.session_state["user_id"] = None
                 st.session_state["username"] = None
@@ -1185,9 +1111,6 @@ with st.sidebar:
                 st.success("Data reset!")
                 st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
-
-
-
 # ── Google Sign-in Dialog ─────────────────────────────────────────────────────
 if st.session_state.get("show_login_dialog"):
     with st.container(border=True):
@@ -1234,7 +1157,6 @@ if st.session_state.get("show_login_dialog"):
             if st.button("✗ CANCEL", key="btn_cancel_login"):
                 st.session_state["show_login_dialog"] = False
                 st.rerun()
-
         # Real Google Sign-In setup guide
         st.markdown("""
         <div style="border: 2px solid #c8a84b33; padding: 12px; border-radius: 8px; background: #080810; margin-top:20px;">
@@ -1256,19 +1178,15 @@ if st.session_state.get("show_login_dialog"):
         </div>
         """, unsafe_allow_html=True)
     st.divider()
-
-
 # ── Main Content Routing ──────────────────────────────────────────────────────
 if active_page == "Searcher":
     st.title("🎴 POKÉDEX SEARCHER")
-
     st.markdown(
         '<div style="font-family:\'Inter\',sans-serif;font-size:13px;color:#666680;'
         'margin:-6px 0 20px;line-height:1.7;">Search any Pokémon card using the '
         'fast TCGdex API — typos are corrected automatically.</div>',
         unsafe_allow_html=True,
     )
-
     # ── Pokémon name text input with fuzzy correction ────────────────────────
     _col_name, _col_set = st.columns([3, 1])
     with _col_name:
@@ -1277,7 +1195,6 @@ if active_page == "Searcher":
             placeholder="e.g. pikachu, bulbasor, charmandr…",
             key="typed_name_input",
         )
-
         _corrected_name: str | None = None
         if typed_name and typed_name.strip():
             _corrected_name = fuzzy_correct(typed_name.strip())
@@ -1286,27 +1203,23 @@ if active_page == "Searcher":
                     f'<div class="fuzzy-hint">→ Searching for <em>{_corrected_name}</em></div>',
                     unsafe_allow_html=True,
                 )
-
     with _col_set:
         set_number = st.text_input(
             "SET NUMBER  (optional)",
             placeholder="e.g. 171/094",
             key="set_number_input",
         )
-
     # ── Search button ─────────────────────────────────────────────────────────
     if st.button("🔍 SEARCH"):
         search_name = ""
         if typed_name and typed_name.strip():
             search_name = _corrected_name if _corrected_name else typed_name.strip()
-
         if not search_name:
             st.warning("Type a Pokémon name to search.")
         else:
             lang_label = {"en": "English", "ja": "Japanese", "": "all languages"}[_lang_code]
             with st.spinner(f'Fetching {lang_label} cards for "{search_name}"…'):
                 raw_cards = search_tcg_all(search_name, set_number.strip(), language=_lang_code)
-
             if raw_cards:
                 found = raw_cards
                 found.sort(key=lambda c: (c["price"] or 0), reverse=True)
@@ -1314,17 +1227,14 @@ if active_page == "Searcher":
             else:
                 st.session_state["search_results"] = []
                 st.warning("No cards found. Try a different name or language.")
-
     # ── Results ───────────────────────────────────────────────────────────────
     if st.session_state["search_results"]:
         results = st.session_state["search_results"]
-
         trainer_cards  = [c for c in results if "'" in c["name"]]
         regional_cards = [c for c in results if any(
             c["name"].startswith(p) for p in _REGIONAL_PREFIXES
         )]
         non_en_cards   = [c for c in results if (c.get("language") or "en").upper() != "EN"]
-
         st.markdown(
             f'<div style="margin:8px 0 16px;">'
             f'<span class="stat-pill">🃏 <span>{len(results)}</span> cards</span>'
@@ -1335,10 +1245,8 @@ if active_page == "Searcher":
             unsafe_allow_html=True,
         )
         show_card_grid(results, mode="search", owned=_owned)
-
 elif active_page == "My Collection":
     st.title("📦 MY COLLECTION")
-
     if not _collection:
         st.info("Your collection is empty. Go to the Card Searcher to add some cards!")
     else:
@@ -1351,7 +1259,6 @@ elif active_page == "My Collection":
         )
         _coll_by_price = sorted(_collection, key=lambda c: -(c.get("price") or 0))
         show_collection_grid(_coll_by_price, owned=_owned, num_cols=8)
-
 elif active_page == "Profit Selection":
     st.title("PROFIT & TRENDS")
     
@@ -1431,5 +1338,3 @@ elif active_page == "Profit Selection":
         profit_list.sort(key=lambda x: x["gain_pct"], reverse=True)
         
         show_profit_grid_with_charts(profit_list)
-
-
