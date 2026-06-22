@@ -517,9 +517,8 @@ def show_profit_grid_with_charts(profits: list[dict]):
         st.write("")
 
 # ── Session state ─────────────────────────────────────────────────────────────
-for _k, _v in [("search_results", []), ("last_search_key", None)]:
-    if _k not in st.session_state:
-        st.session_state[_k] = _v
+if "search_results" not in st.session_state:
+    st.session_state["search_results"] = []
 
 def _trigger_search():
     st.session_state["_search_pending"] = True
@@ -680,17 +679,14 @@ if active_page == "Searcher":
         if not search_name:
             st.warning("Type a Pokémon name to search.")
         else:
-            search_key = (search_name.lower(), set_number.strip(), _lang_code)
-            if search_key != st.session_state["last_search_key"]:
-                st.session_state["last_search_key"] = search_key
-                lang_label = {"en": "English", "ja": "Japanese", "": "all languages"}[_lang_code]
-                with st.spinner(f'Fetching {lang_label} cards for "{search_name}"…'):
-                    raw_cards = search_tcg_all(search_name, set_number.strip(), language=_lang_code)
-                if raw_cards:
-                    st.session_state["search_results"] = sorted(raw_cards, key=lambda c: (c["price"] or 0), reverse=True)
-                else:
-                    st.session_state["search_results"] = []
-                    st.warning("No cards found. Try a different name or language.")
+            lang_label = {"en": "English", "ja": "Japanese", "": "all languages"}[_lang_code]
+            with st.spinner(f'Fetching {lang_label} cards for "{search_name}"…'):
+                raw_cards = search_tcg_all(search_name, set_number.strip(), language=_lang_code)
+            if raw_cards:
+                st.session_state["search_results"] = sorted(raw_cards, key=lambda c: (c["price"] or 0), reverse=True)
+            else:
+                st.session_state["search_results"] = []
+                st.warning("No cards found. Try a different name or language.")
 
     if st.session_state["search_results"]:
         results = st.session_state["search_results"]
